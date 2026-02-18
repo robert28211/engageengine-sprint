@@ -1,0 +1,8 @@
+name = "engageengine-sprint"
+main = "src/worker.js"
+compatibility_date = "2024-09-23"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "engageengine-command"
+database_id = "13f98f2a-574d-495c-acd7-4f8900acd036"

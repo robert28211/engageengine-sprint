@@ -69,7 +69,7 @@ body{font-family:"DM Sans",sans-serif;background:var(--bg);color:var(--text);min
 .task-check{width:20px;height:20px;border-radius:50%;border:2px solid var(--border);cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all 0.15s}
 .task-check:hover{border-color:var(--green);background:var(--green-bg)}
 .task-check.done{border-color:var(--green);background:var(--green)}
-.task-check.done::after{content:"\2713";color:var(--bg);font-size:12px;font-weight:700}
+.task-check.done::after{content:"\\2713";color:var(--bg);font-size:12px;font-weight:700}
 .task-notes{flex:1}.task-notes.completed{text-decoration:line-through;color:var(--text-dim)}
 .task-assignee{font-size:11px;padding:2px 8px;background:var(--surface2);border-radius:4px;color:var(--text-dim);font-family:"JetBrains Mono",monospace}
 .task-due{font-size:11px;font-family:"JetBrains Mono",monospace;color:var(--text-dim)}
@@ -124,7 +124,7 @@ body{font-family:"DM Sans",sans-serif;background:var(--bg);color:var(--text);min
 .checklist-circle{width:22px;height:22px;border-radius:50%;border:2px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all 0.15s}
 .checklist-item:hover .checklist-circle{border-color:var(--green)}
 .checklist-circle.done{border-color:var(--green);background:var(--green)}
-.checklist-circle.done::after{content:"\2713";color:var(--bg);font-size:13px;font-weight:700}
+.checklist-circle.done::after{content:"\\2713";color:var(--bg);font-size:13px;font-weight:700}
 .checklist-label{flex:1;font-size:14px}
 .checklist-label.done{text-decoration:line-through;color:var(--text-dim)}
 .checklist-badge{font-size:10px;padding:2px 8px;border-radius:4px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
@@ -859,7 +859,7 @@ function renderEmailLogs() {
   html += '</div>';
 
   if (logs.length === 0) {
-    html += '<div class="email-empty">No email logs — all dismissed or scanner hasn\'t run yet.</div>';
+    html += '<div class="email-empty">No email logs — all dismissed or scanner hasn\\'t run yet.</div>';
     document.getElementById('emailContent').innerHTML = html;
     return;
   }

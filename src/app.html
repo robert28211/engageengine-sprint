@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EngageEngine Sprint Tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0a0a0f;--surface:#12121a;--surface2:#1a1a26;--border:#2a2a3a;--text:#e8e8f0;--text-dim:#8888a0;--accent:#4f8cff;--accent-glow:rgba(79,140,255,0.15);--green:#34d399;--green-bg:rgba(52,211,153,0.1);--amber:#fbbf24;--amber-bg:rgba(251,191,36,0.1);--red:#f87171;--red-bg:rgba(248,113,113,0.1);--purple:#a78bfa;--purple-bg:rgba(167,139,250,0.1);--orange:#fb923c;--orange-bg:rgba(251,146,60,0.1)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:"DM Sans",sans-serif;background:var(--bg);color:var(--text);min-height:100vh;-webkit-font-smoothing:antialiased}
+
+/* ── Header ── */
+.header{padding:20px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:var(--bg);z-index:100}
+.header-left{display:flex;align-items:center;gap:16px}
+.header h1{font-size:18px;font-weight:700;letter-spacing:-0.5px}
+.header h1 span{color:var(--accent)}
+.header-stats{display:flex;gap:16px;font-size:13px;color:var(--text-dim);font-family:"JetBrains Mono",monospace}
+.header-stats .sv{color:var(--text);font-weight:500}
+.nav-back{display:none;align-items:center;gap:8px;color:var(--accent);cursor:pointer;font-size:14px;font-weight:500;padding:6px 0}
+.nav-back:hover{text-decoration:underline}
+
+/* ── Mode Toggle ── */
+.mode-toggle{display:flex;gap:4px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:3px}
+.mode-btn{padding:6px 14px;border-radius:6px;border:none;background:none;color:var(--text-dim);font-family:"DM Sans",sans-serif;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s}
+.mode-btn.active{background:var(--accent);color:#fff}
+.mode-btn:hover:not(.active){color:var(--text)}
+
+/* ── Shared Layout ── */
+.container{max-width:1200px;margin:0 auto;padding:24px}
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:28px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px}
+.stat-card .label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:6px}
+.stat-card .value{font-size:28px;font-weight:700;font-family:"JetBrains Mono",monospace}
+.stat-card .value.green{color:var(--green)}.stat-card .value.amber{color:var(--amber)}.stat-card .value.accent{color:var(--accent)}
+.section-title{font-size:13px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);margin-bottom:12px;padding-left:2px}
+.loading{text-align:center;padding:60px;color:var(--text-dim);font-size:14px}
+.hidden{display:none!important}
+
+/* ── Job Tracker Styles ── */
+.client-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px;margin-bottom:32px}
+.client-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;cursor:pointer;transition:all 0.15s;display:flex;align-items:center;justify-content:space-between}
+.client-card:hover{border-color:var(--accent);background:var(--accent-glow)}
+.client-name{font-weight:600;font-size:15px}
+.client-meta{display:flex;gap:14px;font-size:12px;font-family:"JetBrains Mono",monospace;color:var(--text-dim)}
+.client-meta .jobs{color:var(--accent)}.client-meta .open{color:var(--amber)}.client-meta .done{color:var(--green)}
+.team-row{display:flex;gap:10px;margin-bottom:32px;flex-wrap:wrap}
+.team-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 20px;cursor:pointer;transition:all 0.15s;display:flex;align-items:center;gap:12px}
+.team-card:hover{border-color:var(--accent);background:var(--accent-glow)}
+.team-avatar{width:36px;height:36px;border-radius:50%;background:var(--accent-glow);border:2px solid var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:var(--accent)}
+.team-name{font-weight:600;font-size:14px}
+.team-tasks{font-size:12px;color:var(--text-dim);font-family:"JetBrains Mono",monospace}
+.detail-header{margin-bottom:24px}
+.detail-header h2{font-size:24px;font-weight:700;margin-bottom:4px}
+.detail-header .sub{color:var(--text-dim);font-size:14px}
+.job-section{margin-bottom:24px}
+.job-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:8px 8px 0 0}
+.job-header.collapsed{border-radius:8px}
+.job-title{font-weight:600;font-size:14px;cursor:pointer;flex:1}
+.job-badge{font-size:11px;padding:2px 8px;border-radius:4px;font-family:"JetBrains Mono",monospace}
+.job-badge.active{background:var(--green-bg);color:var(--green)}.job-badge.complete{background:var(--surface2);color:var(--text-dim)}
+.job-actions{display:flex;gap:6px;align-items:center;margin-left:8px}
+.job-complete-btn{font-size:11px;padding:3px 10px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--text-dim);cursor:pointer;font-family:"JetBrains Mono",monospace;transition:all 0.15s}
+.job-complete-btn:hover{border-color:var(--green);color:var(--green);background:var(--green-bg)}
+.job-complete-btn.reopen:hover{border-color:var(--amber);color:var(--amber);background:var(--amber-bg)}
+.task-list{border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;overflow:hidden}
+.task-item{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);font-size:14px;transition:background 0.1s}
+.task-item:last-child{border-bottom:none}.task-item:hover{background:var(--surface2)}
+.task-check{width:20px;height:20px;border-radius:50%;border:2px solid var(--border);cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all 0.15s}
+.task-check:hover{border-color:var(--green);background:var(--green-bg)}
+.task-check.done{border-color:var(--green);background:var(--green)}
+.task-check.done::after{content:"\2713";color:var(--bg);font-size:12px;font-weight:700}
+.task-notes{flex:1}.task-notes.completed{text-decoration:line-through;color:var(--text-dim)}
+.task-assignee{font-size:11px;padding:2px 8px;background:var(--surface2);border-radius:4px;color:var(--text-dim);font-family:"JetBrains Mono",monospace}
+.task-due{font-size:11px;font-family:"JetBrains Mono",monospace;color:var(--text-dim)}
+.task-due.overdue{color:var(--red)}.task-due.soon{color:var(--amber)}
+.add-btn{background:var(--accent-glow);border:1px solid var(--accent);color:var(--accent);padding:10px 20px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;font-family:"DM Sans",sans-serif;transition:all 0.2s;margin-top:8px;box-shadow:0 0 12px rgba(79,140,255,0.25)}
+.add-btn:hover{background:var(--accent);color:#fff;box-shadow:0 0 20px rgba(79,140,255,0.4)}
+.inline-form{display:none;gap:8px;margin-top:8px;align-items:center}
+.inline-form.show{display:flex}
+.inline-form input,.inline-form select{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-family:"DM Sans",sans-serif;font-size:13px;outline:none}
+.inline-form input:focus,.inline-form select:focus{border-color:var(--accent)}
+.inline-form input{flex:1}
+.inline-form button{background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-family:"DM Sans",sans-serif;font-weight:600;font-size:13px}
+
+/* ── Sprint Mode Styles ── */
+.sprint-client-bar{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap;align-items:center}
+.sprint-client-btn{padding:8px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text-dim);font-family:"DM Sans",sans-serif;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s}
+.sprint-client-btn:hover{border-color:var(--accent);color:var(--text)}
+.sprint-client-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.sprint-activate-btn{padding:8px 16px;border-radius:8px;border:1px dashed var(--border);background:none;color:var(--text-dim);font-family:"DM Sans",sans-serif;font-size:13px;cursor:pointer;transition:all 0.15s}
+.sprint-activate-btn:hover{border-color:var(--green);color:var(--green)}
+
+/* Overall progress */
+.sprint-progress-wrap{margin-bottom:24px}
+.sprint-progress-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.sprint-progress-header .pct{font-size:28px;font-weight:700;font-family:"JetBrains Mono",monospace;color:var(--green)}
+.sprint-progress-header .counts{font-size:13px;color:var(--text-dim);font-family:"JetBrains Mono",monospace}
+.sprint-progress-bar{height:8px;background:var(--surface2);border-radius:4px;overflow:hidden}
+.sprint-progress-fill{height:100%;background:var(--green);border-radius:4px;transition:width 0.3s}
+
+/* Phase nav */
+.phase-nav{display:flex;gap:6px;margin-bottom:24px;flex-wrap:wrap}
+.phase-btn{padding:10px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text-dim);font-family:"DM Sans",sans-serif;font-size:13px;cursor:pointer;transition:all 0.15s;display:flex;flex-direction:column;align-items:center;gap:4px;min-width:120px}
+.phase-btn:hover{border-color:var(--accent);color:var(--text)}
+.phase-btn.active{border-color:var(--accent);background:var(--accent-glow);color:var(--text)}
+.phase-btn .phase-name{font-weight:600;font-size:13px}
+.phase-btn .phase-sub{font-size:10px;color:var(--text-dim)}
+.phase-btn .phase-pct{font-size:11px;font-family:"JetBrains Mono",monospace;color:var(--green)}
+
+/* Section cards */
+.sprint-section{background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:16px;overflow:hidden}
+.sprint-section-header{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;cursor:pointer;transition:background 0.1s}
+.sprint-section-header:hover{background:var(--surface2)}
+.sprint-section-title{font-weight:600;font-size:14px}
+.sprint-section-count{font-size:12px;font-family:"JetBrains Mono",monospace;color:var(--text-dim)}
+.sprint-section-count .done-count{color:var(--green)}
+.sprint-section-items{border-top:1px solid var(--border)}
+
+/* Checklist items */
+.checklist-item{display:flex;align-items:center;gap:12px;padding:10px 18px;border-bottom:1px solid var(--border);transition:background 0.1s;cursor:pointer}
+.checklist-item:last-child{border-bottom:none}
+.checklist-item:hover{background:var(--surface2)}
+.checklist-circle{width:22px;height:22px;border-radius:50%;border:2px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all 0.15s}
+.checklist-item:hover .checklist-circle{border-color:var(--green)}
+.checklist-circle.done{border-color:var(--green);background:var(--green)}
+.checklist-circle.done::after{content:"\2713";color:var(--bg);font-size:13px;font-weight:700}
+.checklist-label{flex:1;font-size:14px}
+.checklist-label.done{text-decoration:line-through;color:var(--text-dim)}
+.checklist-badge{font-size:10px;padding:2px 8px;border-radius:4px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
+.checklist-badge.critical{background:var(--red-bg);color:var(--red)}
+.checklist-by{font-size:11px;color:var(--text-dim);font-family:"JetBrains Mono",monospace}
+
+/* Activate modal */
+.activate-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;display:flex;align-items:center;justify-content:center}
+.activate-modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:90vw}
+.activate-modal h3{font-size:16px;margin-bottom:16px}
+.activate-modal label{font-size:13px;color:var(--text-dim);display:block;margin-bottom:4px}
+.activate-modal select,.activate-modal input{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:6px;font-family:"DM Sans",sans-serif;font-size:14px;margin-bottom:12px;outline:none}
+.activate-modal select:focus,.activate-modal input:focus{border-color:var(--accent)}
+.activate-modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+.activate-modal-actions button{padding:8px 18px;border-radius:6px;font-family:"DM Sans",sans-serif;font-size:13px;font-weight:600;cursor:pointer;border:none}
+.activate-modal-actions .cancel-btn{background:var(--surface2);color:var(--text-dim)}
+.activate-modal-actions .confirm-btn{background:var(--green);color:var(--bg)}
+
+@media(max-width:768px){.stats-row{grid-template-columns:repeat(2,1fr)}.client-grid{grid-template-columns:1fr}.header-stats{display:none}.container{padding:16px}.team-row{flex-direction:column}.phase-nav{flex-direction:column}.phase-btn{min-width:auto}}
+
+/* ── Email Intel Mode ── */
+.email-summary-bar{display:flex;gap:12px;align-items:center;margin-bottom:24px;padding:14px 18px;background:var(--surface);border:1px solid var(--border);border-radius:10px;flex-wrap:wrap}
+.email-summary-bar .esb-item{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-dim)}
+.email-summary-bar .esb-value{font-weight:700;color:var(--text);font-family:"JetBrains Mono",monospace}
+.email-summary-bar .esb-value.ok{color:var(--green)}
+.email-summary-bar .esb-value.missing{color:var(--red)}
+.email-summary-bar .esb-sep{color:var(--border);margin:0 8px}
+.email-group-label{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);margin:20px 0 8px;padding-left:2px}
+.email-log-table{width:100%;border-collapse:collapse;border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:4px}
+.email-log-table th{background:var(--surface);padding:10px 14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:600;border-bottom:1px solid var(--border)}
+.email-log-table td{padding:10px 14px;font-size:13px;border-bottom:1px solid var(--border);vertical-align:middle}
+.email-log-table tr:last-child td{border-bottom:none}
+.email-log-table tr:hover td{background:var(--surface2)}
+.email-time{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--text-dim);white-space:nowrap}
+.email-type-badge{font-size:10px;padding:2px 8px;border-radius:4px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;white-space:nowrap}
+.email-type-badge.formspree_lead,.email-type-badge.chatbot_lead,.email-type-badge.jotform_lead{background:var(--green-bg);color:var(--green)}
+.email-type-badge.pixel_data{background:var(--purple-bg);color:var(--purple)}
+.email-type-badge.client_mention{background:var(--accent-glow);color:var(--accent)}
+.email-client-badge{font-size:11px;padding:2px 8px;background:var(--amber-bg);color:var(--amber);border-radius:4px;font-family:"JetBrains Mono",monospace;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block}
+.email-subject{font-weight:500;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.email-sender{font-size:12px;color:var(--text-dim);font-family:"JetBrains Mono",monospace;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.email-dismiss-btn{background:none;border:1px solid var(--border);color:var(--text-dim);font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer;font-family:"JetBrains Mono",monospace;transition:all 0.15s;white-space:nowrap}
+.email-dismiss-btn:hover{border-color:var(--red);color:var(--red);background:var(--red-bg)}
+.email-empty{text-align:center;padding:60px;color:var(--text-dim);font-size:14px}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="nav-back" id="navBack" data-action="nav-back">&#8592; Back</div>
+    <h1>Engage<span>Engine</span> Sprint</h1>
+    <div class="mode-toggle">
+      <button class="mode-btn active" id="modeJobBtn" data-action="mode-jobs">Job Tracker</button>
+      <button class="mode-btn" id="modeSprintBtn" data-action="mode-sprint">30-Day Sprint</button>
+      <button class="mode-btn" id="modeEmailBtn" data-action="mode-email">Email Intel</button>
+    </div>
+  </div>
+  <div class="header-stats" id="headerStats"></div>
+</div>
+
+<div class="container">
+  <!-- ══ JOB TRACKER MODE ══ -->
+  <div id="jobsMode">
+    <div id="dashboard">
+      <div class="stats-row" id="statsRow"></div>
+      <div class="section-title">Team</div>
+      <div class="team-row" id="teamRow"></div>
+      <div class="section-title">Clients</div>
+      <div class="client-grid" id="clientGrid"></div>
+    </div>
+    <div id="detail" class="hidden"></div>
+    <div id="teamDetail" class="hidden"></div>
+  </div>
+
+  <!-- ══ SPRINT MODE ══ -->
+  <div id="sprintMode" class="hidden">
+    <div class="sprint-client-bar" id="sprintClientBar"></div>
+    <div id="sprintContent">
+      <div style="text-align:center;padding:60px;color:var(--text-dim)">Select a client above to view their 30-day sprint checklist.</div>
+    </div>
+  </div>
+
+  <!-- ══ EMAIL INTEL MODE ══ -->
+  <div id="emailMode" class="hidden">
+    <div id="emailContent"><div class="loading">Loading email data...</div></div>
+  </div>
+</div>
+
+<script>
+var API = '';
+var dashboardData = null;
+var currentClientId = null;
+var currentMode = 'jobs'; // 'jobs', 'sprint', or 'email'
+var emailData = null;
+
+// Sprint state
+var sprintClientId = null;
+var sprintItems = {};   // task_id -> {completed, completed_by, completed_date}
+var sprintPhase = 'preSprint';
+
+// ── Utilities ──
+function esc(s) { if (!s) return ''; return String(s).split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;').split('"').join('&quot;'); }
+function formatDate(d) { if (!d) return ''; var p = d.split('-'); return p[1] + '/' + p[2]; }
+function daysDiff(a, b) { return Math.ceil((new Date(b) - new Date(a)) / 86400000); }
+
+// ══════════════════════════════════════════════
+// ── SPRINT TEMPLATE DATA ──
+// ══════════════════════════════════════════════
+
+var SPRINT_PHASES = [
+  { id: 'preSprint', name: 'Pre-Sprint', subtitle: 'Foundation Setup', sections: ['preSprint_access','preSprint_vendasta','preSprint_oviond','preSprint_assets'] },
+  { id: 'week1', name: 'Week 1', subtitle: 'Technical Foundation', sections: ['week1_technical','week1_speed','week1_listings','week1_diagnosis'] },
+  { id: 'week2', name: 'Week 2', subtitle: 'Messaging & Positioning', sections: ['week2_headlines','week2_offer','week2_landing'] },
+  { id: 'week3', name: 'Week 3', subtitle: 'Social Proof & Trust', sections: ['week3_reviews','week3_proof','week3_guarantee'] },
+  { id: 'week4', name: 'Week 4', subtitle: 'Conversion & Launch', sections: ['week4_cta','week4_retargeting','week4_launch','week4_handoff'] }
+];
+
+var SPRINT_SECTIONS = {
+  preSprint_access: { title: 'Access & Credentials', items: [
+    { id: 'gbp', label: 'Google Business Profile (Owner access)', critical: true },
+    { id: 'ga4', label: 'Google Analytics 4 (Admin access)', critical: true },
+    { id: 'gads', label: 'Google Ads (Admin access, if existing)', critical: false },
+    { id: 'meta', label: 'Meta Business Manager (Admin access)', critical: false },
+    { id: 'website', label: 'Website backend access', critical: true },
+    { id: 'domain', label: 'Domain registrar access', critical: false },
+    { id: 'crm', label: 'CRM access (if applicable)', critical: false },
+    { id: 'hosting', label: 'Hosting panel access', critical: false }
+  ]},
+  preSprint_vendasta: { title: 'Vendasta Setup', items: [
+    { id: 'vendasta-account', label: 'Create client account in Vendasta', critical: true },
+    { id: 'vendasta-listings', label: 'Activate Business Listings (Listings Sync Pro)', critical: true },
+    { id: 'vendasta-reputation', label: 'Activate Reputation Management', critical: false },
+    { id: 'vendasta-seo', label: 'Activate Local SEO (if applicable)', critical: false },
+    { id: 'vendasta-social', label: 'Activate Social Marketing dashboard', critical: false },
+    { id: 'vendasta-chatbot', label: 'Activate Chatbot', critical: false },
+    { id: 'vendasta-notifications', label: 'Configure email notifications', critical: false },
+    { id: 'vendasta-invite', label: 'Send client portal invitation', critical: false }
+  ]},
+  preSprint_oviond: { title: 'Oviond Reporting', items: [
+    { id: 'oviond-workspace', label: 'Create new client workspace', critical: true },
+    { id: 'oviond-ga4', label: 'Connect Google Analytics 4', critical: false },
+    { id: 'oviond-gsc', label: 'Connect Google Search Console', critical: false },
+    { id: 'oviond-gads', label: 'Connect Google Ads (if applicable)', critical: false },
+    { id: 'oviond-meta', label: 'Connect Meta Ads (if applicable)', critical: false },
+    { id: 'oviond-gbp', label: 'Connect Google Business Profile', critical: false },
+    { id: 'oviond-widgets', label: 'Configure dashboard widgets', critical: false },
+    { id: 'oviond-reports', label: 'Set up automated weekly reports', critical: false }
+  ]},
+  preSprint_assets: { title: 'Asset Collection', items: [
+    { id: 'logo', label: 'Logo files (vector preferred)', critical: false },
+    { id: 'colors', label: 'Brand colors (hex codes)', critical: false },
+    { id: 'fonts', label: 'Brand fonts (if specified)', critical: false },
+    { id: 'photos', label: 'Current photography library', critical: false },
+    { id: 'testimonials', label: 'Existing testimonials and reviews', critical: false },
+    { id: 'service-area', label: 'Service area documentation', critical: false },
+    { id: 'pricing', label: 'Current pricing structure', critical: false }
+  ]},
+  week1_technical: { title: 'Technical Audit', items: [
+    { id: 'speed-test', label: 'Run PageSpeed Insights audit', critical: true },
+    { id: 'mobile-test', label: 'Mobile responsiveness check', critical: false },
+    { id: 'ssl-check', label: 'SSL certificate verification', critical: false },
+    { id: 'indexing', label: 'Google Search Console indexing status', critical: false },
+    { id: 'broken-links', label: 'Broken link scan', critical: false },
+    { id: 'schema', label: 'Schema markup review', critical: false }
+  ]},
+  week1_speed: { title: 'Speed Optimization', items: [
+    { id: 'image-opt', label: 'Image compression and optimization', critical: false },
+    { id: 'caching', label: 'Browser caching implementation', critical: false },
+    { id: 'minify', label: 'CSS/JS minification', critical: false },
+    { id: 'cdn', label: 'CDN setup (if applicable)', critical: false }
+  ]},
+  week1_listings: { title: 'Listings Audit', items: [
+    { id: 'nap-audit', label: 'NAP consistency audit', critical: true },
+    { id: 'gbp-optimize', label: 'Google Business Profile optimization', critical: false },
+    { id: 'categories', label: 'Category selection review', critical: false },
+    { id: 'photos-gbp', label: 'GBP photo upload', critical: false },
+    { id: 'services-gbp', label: 'Services/Products setup in GBP', critical: false }
+  ]},
+  week1_diagnosis: { title: 'Initial Diagnosis', items: [
+    { id: 'competitor-review', label: 'Top 3 competitor analysis', critical: false },
+    { id: 'keyword-baseline', label: 'Current keyword rankings baseline', critical: false },
+    { id: 'traffic-baseline', label: 'Traffic baseline documentation', critical: false },
+    { id: 'conversion-baseline', label: 'Conversion baseline setup', critical: false }
+  ]},
+  week2_headlines: { title: 'Messaging Overhaul', items: [
+    { id: 'headline-audit', label: 'Current headline effectiveness audit', critical: false },
+    { id: 'value-prop', label: 'Value proposition refinement', critical: true },
+    { id: 'headline-variants', label: 'Create 5+ headline variants', critical: false },
+    { id: 'subheadline', label: 'Supporting subheadline copy', critical: false }
+  ]},
+  week2_offer: { title: 'Offer Development', items: [
+    { id: 'offer-audit', label: 'Current offer analysis', critical: false },
+    { id: 'offer-create', label: 'Develop irresistible offer', critical: true },
+    { id: 'urgency', label: 'Add urgency/scarcity elements', critical: false },
+    { id: 'guarantee', label: 'Guarantee formulation', critical: false }
+  ]},
+  week2_landing: { title: 'Landing Page Optimization', items: [
+    { id: 'hero-section', label: 'Hero section redesign', critical: false },
+    { id: 'benefit-blocks', label: 'Benefit blocks creation', critical: false },
+    { id: 'social-proof-section', label: 'Social proof section', critical: false },
+    { id: 'cta-placement', label: 'CTA button optimization', critical: false }
+  ]},
+  week3_reviews: { title: 'Review Generation', items: [
+    { id: 'review-audit', label: 'Current review audit', critical: true },
+    { id: 'review-response', label: 'Respond to existing reviews', critical: false },
+    { id: 'review-system', label: 'Implement review request system', critical: false },
+    { id: 'review-training', label: 'Train client on review requests', critical: false }
+  ]},
+  week3_proof: { title: 'Social Proof Assets', items: [
+    { id: 'testimonial-collect', label: 'Collect written testimonials', critical: false },
+    { id: 'case-study', label: 'Create 1 case study', critical: false },
+    { id: 'before-after', label: 'Before/after examples', critical: false },
+    { id: 'credentials', label: 'Credentials/certifications display', critical: false }
+  ]},
+  week3_guarantee: { title: 'Trust Elements', items: [
+    { id: 'guarantee-badge', label: 'Guarantee badge creation', critical: false },
+    { id: 'trust-badges', label: 'Trust badges implementation', critical: false },
+    { id: 'about-page', label: 'About page humanization', critical: false },
+    { id: 'team-photos', label: 'Team photos (if applicable)', critical: false }
+  ]},
+  week4_cta: { title: 'Conversion Optimization', items: [
+    { id: 'cta-audit', label: 'CTA audit and optimization', critical: true },
+    { id: 'form-optimization', label: 'Form field optimization', critical: false },
+    { id: 'click-to-call', label: 'Click-to-call implementation', critical: false },
+    { id: 'chat-widget', label: 'Chat widget setup (if applicable)', critical: false }
+  ]},
+  week4_retargeting: { title: 'Retargeting Setup', items: [
+    { id: 'pixel-install', label: 'Facebook pixel installation', critical: false },
+    { id: 'google-remarketing', label: 'Google remarketing tag', critical: false },
+    { id: 'audience-creation', label: 'Custom audience creation', critical: false },
+    { id: 'retargeting-ads', label: 'Retargeting ad creation', critical: false }
+  ]},
+  week4_launch: { title: 'Campaign Launch', items: [
+    { id: 'campaign-structure', label: 'Campaign structure finalization', critical: false },
+    { id: 'ad-copy-final', label: 'Final ad copy approval', critical: false },
+    { id: 'budget-confirm', label: 'Budget confirmation', critical: false },
+    { id: 'launch', label: 'Campaign launch', critical: true }
+  ]},
+  week4_handoff: { title: 'Client Handoff', items: [
+    { id: 'dashboard-walkthrough', label: 'Reporting dashboard walkthrough', critical: false },
+    { id: 'expectations', label: 'Set ongoing expectations', critical: false },
+    { id: 'communication', label: 'Establish communication cadence', critical: false },
+    { id: 'documentation', label: 'Handoff documentation complete', critical: false }
+  ]}
+};
+
+// Count all items
+var TOTAL_SPRINT_ITEMS = 0;
+for (var k in SPRINT_SECTIONS) { TOTAL_SPRINT_ITEMS += SPRINT_SECTIONS[k].items.length; }
+
+// ══════════════════════════════════════════════
+// ── EVENT DELEGATION ──
+// ══════════════════════════════════════════════
+
+document.addEventListener('click', function(e) {
+  var el = e.target.closest('[data-action]');
+  if (!el) return;
+  var act = el.getAttribute('data-action');
+  var id = el.getAttribute('data-id') || '';
+  var val = el.getAttribute('data-val') || '';
+
+  // Mode switching
+  if (act === 'mode-jobs') { switchMode('jobs'); }
+  else if (act === 'mode-sprint') { switchMode('sprint'); }
+  else if (act === 'mode-email') { switchMode('email'); }
+  else if (act === 'email-dismiss') { dismissEmailLog(id); }
+  else if (act === 'nav-back') { showDashboard(); }
+
+  // Job tracker actions
+  else if (act === 'load-client') { loadClient(id); }
+  else if (act === 'load-team') { loadTeam(val); }
+  else if (act === 'toggle-tasks') { el.classList.toggle('collapsed'); var tl = el.nextElementSibling; if (tl) tl.classList.toggle('hidden'); }
+  else if (act === 'task-toggle') { toggleTask(id, val === '1', currentClientId); }
+  else if (act === 'job-complete') { completeJob(id, currentClientId); }
+  else if (act === 'job-reopen') { reopenJob(id, currentClientId); }
+  else if (act === 'toggle-add-job') { toggleAddJob(id); }
+  else if (act === 'create-job') { createJob(id); }
+  else if (act === 'toggle-add-task') { toggleAddTask(id); }
+  else if (act === 'create-task') { createTask(id, val); }
+
+  // Sprint actions
+  else if (act === 'sprint-select-client') { loadSprintClient(id); }
+  else if (act === 'sprint-phase') { sprintPhase = id; renderSprintChecklist(); }
+  else if (act === 'sprint-toggle-item') { toggleSprintItem(id); }
+  else if (act === 'sprint-toggle-section') { var items = el.parentElement.querySelector('.sprint-section-items'); if (items) items.classList.toggle('hidden'); }
+  else if (act === 'sprint-activate') { showActivateModal(); }
+  else if (act === 'sprint-activate-confirm') { activateSprintClient(); }
+  else if (act === 'sprint-activate-cancel') { closeActivateModal(); }
+});
+
+// ══════════════════════════════════════════════
+// ── MODE SWITCHING ──
+// ══════════════════════════════════════════════
+
+function switchMode(mode) {
+  currentMode = mode;
+  document.getElementById('modeJobBtn').classList.toggle('active', mode === 'jobs');
+  document.getElementById('modeSprintBtn').classList.toggle('active', mode === 'sprint');
+  document.getElementById('modeEmailBtn').classList.toggle('active', mode === 'email');
+  document.getElementById('jobsMode').classList.toggle('hidden', mode !== 'jobs');
+  document.getElementById('sprintMode').classList.toggle('hidden', mode !== 'sprint');
+  document.getElementById('emailMode').classList.toggle('hidden', mode !== 'email');
+  document.getElementById('navBack').style.display = 'none';
+
+  if (mode === 'jobs') {
+    document.getElementById('headerStats').style.display = '';
+    if (dashboardData) renderDashboard(); else loadDashboard();
+  } else if (mode === 'sprint') {
+    document.getElementById('headerStats').style.display = 'none';
+    renderSprintClientBar();
+  } else if (mode === 'email') {
+    document.getElementById('headerStats').style.display = 'none';
+    loadEmailLogs();
+  }
+}
+
+// ══════════════════════════════════════════════
+// ── JOB TRACKER (preserved exactly) ──
+// ══════════════════════════════════════════════
+
+function statCard(label, value, color) {
+  return '<div class="stat-card"><div class="label">' + label + '</div><div class="value ' + color + '">' + value + '</div></div>';
+}
+
+function clientCard(c) {
+  return '<div class="client-card" data-action="load-client" data-id="' + c.id + '"><div class="client-name">' + esc(c.name) + '</div><div class="client-meta"><span class="jobs">' + c.active_jobs + ' jobs</span><span class="open">' + c.open_tasks + ' open</span><span class="done">' + c.done_tasks + ' done</span></div></div>';
+}
+
+async function loadDashboard() {
+  document.getElementById('clientGrid').innerHTML = '<div class="loading">Loading...</div>';
+  var res = await fetch(API + '/api/dashboard');
+  dashboardData = await res.json();
+  renderDashboard();
+}
+
+function renderDashboard() {
+  var d = dashboardData;
+  var clients = d.clients, stats = d.stats, team = d.team;
+  document.getElementById('headerStats').innerHTML = '<div><span class="sv">' + stats.active_clients + '</span> clients</div><div><span class="sv">' + stats.active_jobs + '</span> jobs</div><div><span class="sv">' + stats.open_tasks + '</span> open</div>';
+  document.getElementById('statsRow').innerHTML = statCard('Active Clients', stats.active_clients, 'accent') + statCard('Active Jobs', stats.active_jobs, '') + statCard('Open Tasks', stats.open_tasks, 'amber') + statCard('Completed', stats.done_tasks, 'green');
+  var teamHtml = '';
+  for (var i = 0; i < team.length; i++) {
+    var t = team[i];
+    teamHtml += '<div class="team-card" data-action="load-team" data-val="' + encodeURIComponent(t.name) + '"><div class="team-avatar">' + t.name.charAt(0).toUpperCase() + '</div><div><div class="team-name">' + esc(t.name) + '</div><div class="team-tasks">' + t.assigned_tasks + ' tasks</div></div></div>';
+  }
+  document.getElementById('teamRow').innerHTML = teamHtml;
+  var active = clients.filter(function(c) { return c.active_jobs > 0 || c.open_tasks > 0 });
+  var inactive = clients.filter(function(c) { return c.active_jobs === 0 && c.open_tasks === 0 });
+  var grid = '';
+  for (var i = 0; i < active.length; i++) grid += clientCard(active[i]);
+  if (inactive.length) grid += '<div class="section-title" style="grid-column:1/-1;margin-top:16px">No Active Work</div>';
+  for (var i = 0; i < inactive.length; i++) grid += clientCard(inactive[i]);
+  document.getElementById('clientGrid').innerHTML = grid;
+  document.getElementById('dashboard').classList.remove('hidden');
+  document.getElementById('detail').classList.add('hidden');
+  document.getElementById('teamDetail').classList.add('hidden');
+  document.getElementById('navBack').style.display = 'none';
+  currentClientId = null;
+}
+
+async function loadClient(id) {
+  currentClientId = id;
+  document.getElementById('detail').innerHTML = '<div class="loading">Loading...</div>';
+  document.getElementById('detail').classList.remove('hidden');
+  document.getElementById('dashboard').classList.add('hidden');
+  document.getElementById('navBack').style.display = 'flex';
+  var res = await fetch(API + '/api/clients/' + id);
+  var data = await res.json();
+  renderClientDetail(data);
+}
+
+function renderClientDetail(data) {
+  var client = data.client, jobs = data.jobs, tasks = data.tasks;
+  var today = new Date().toISOString().split('T')[0];
+  var openCount = tasks.filter(function(t) { return t.status !== 'Complete' }).length;
+  var html = '<div class="detail-header"><h2>' + esc(client.name) + '</h2><div class="sub">' + jobs.length + ' jobs &middot; ' + openCount + ' open tasks</div></div>';
+  var activeJobs = jobs.filter(function(j) { return j.status === 'Active' });
+  var completeJobs = jobs.filter(function(j) { return j.status === 'Complete' });
+  for (var i = 0; i < activeJobs.length; i++) {
+    html += renderJobSection(activeJobs[i], tasks.filter(function(t) { return t.job_id === activeJobs[i].id }), client.id, today, false);
+  }
+  html += '<button class="add-btn" data-action="toggle-add-job" data-id="' + client.id + '">+ Add Job</button>';
+  html += '<div id="addJobForm-' + client.id + '" class="inline-form"><input type="text" id="newJobName-' + client.id + '" placeholder="Job name..."><button data-action="create-job" data-id="' + client.id + '">Add</button></div>';
+  if (completeJobs.length) {
+    html += '<div class="section-title" style="margin-top:24px">Completed Jobs</div>';
+    for (var i = 0; i < completeJobs.length; i++) {
+      html += renderJobSection(completeJobs[i], tasks.filter(function(t) { return t.job_id === completeJobs[i].id }), client.id, today, true);
+    }
+  }
+  document.getElementById('detail').innerHTML = html;
+}
+
+function renderJobSection(job, tasks, clientId, today, collapsed) {
+  var isActive = job.status === 'Active';
+  var btnHtml = isActive
+    ? '<button class="job-complete-btn" data-action="job-complete" data-id="' + job.id + '">Complete</button>'
+    : '<button class="job-complete-btn reopen" data-action="job-reopen" data-id="' + job.id + '">Reopen</button>';
+  var html = '<div class="job-section"><div class="job-header' + (collapsed ? ' collapsed' : '') + '"><div class="job-title" data-action="toggle-tasks">' + esc(job.name) + ' <span style="color:var(--text-dim);font-weight:400;font-size:12px">' + job.open_tasks + '/' + job.total_tasks + '</span></div><div class="job-actions">' + btnHtml + '<span class="job-badge ' + (isActive ? 'active' : 'complete') + '">' + job.status + '</span></div></div>';
+  html += '<div class="task-list' + (collapsed ? ' hidden' : '') + '">';
+  for (var i = 0; i < tasks.length; i++) {
+    var t = tasks[i];
+    var isDone = t.status === 'Complete';
+    var dueClass = '';
+    if (!isDone && t.due_date) { dueClass = t.due_date < today ? 'overdue' : (daysDiff(today, t.due_date) <= 3 ? 'soon' : '') }
+    html += '<div class="task-item"><div class="task-check' + (isDone ? ' done' : '') + '" data-action="task-toggle" data-id="' + t.id + '" data-val="' + (isDone ? '0' : '1') + '"></div><div class="task-notes' + (isDone ? ' completed' : '') + '">' + esc(t.notes || 'Untitled task') + '</div>';
+    if (t.assigned_to) html += '<span class="task-assignee">' + esc(t.assigned_to) + '</span>';
+    if (t.due_date) html += '<span class="task-due ' + dueClass + '">' + formatDate(t.due_date) + '</span>';
+    html += '</div>';
+  }
+  html += '<div class="task-item" style="padding:6px 16px"><button class="add-btn" style="margin:0;padding:4px 12px;font-size:12px" data-action="toggle-add-task" data-id="' + job.id + '">+ task</button></div>';
+  html += '<div id="addTaskForm-' + job.id + '" class="inline-form" style="padding:8px 16px"><input type="text" id="newTaskNotes-' + job.id + '" placeholder="Task description..."><select id="newTaskAssign-' + job.id + '"><option value="">Assign</option><option>Robbie</option><option>Aaron</option><option>Aiden</option><option>Burt</option></select><input type="date" id="newTaskDue-' + job.id + '" style="width:140px"><button data-action="create-task" data-id="' + job.id + '" data-val="' + clientId + '">Add</button></div>';
+  html += '</div></div>';
+  return html;
+}
+
+async function loadTeam(encodedName) {
+  var name = decodeURIComponent(encodedName);
+  document.getElementById('teamDetail').innerHTML = '<div class="loading">Loading...</div>';
+  document.getElementById('teamDetail').classList.remove('hidden');
+  document.getElementById('dashboard').classList.add('hidden');
+  document.getElementById('navBack').style.display = 'flex';
+  var res = await fetch(API + '/api/team/' + encodedName);
+  var data = await res.json();
+  var today = new Date().toISOString().split('T')[0];
+  var html = '<div class="detail-header"><h2>' + esc(data.name) + '</h2><div class="sub">' + data.tasks.length + ' assigned tasks</div></div>';
+  var byClient = {};
+  for (var i = 0; i < data.tasks.length; i++) { var t = data.tasks[i]; if (!byClient[t.client_name]) byClient[t.client_name] = []; byClient[t.client_name].push(t) }
+  var keys = Object.keys(byClient).sort();
+  for (var k = 0; k < keys.length; k++) {
+    var cn = keys[k];
+    html += '<div class="section-title" style="margin-top:16px">' + esc(cn) + '</div>';
+    html += '<div class="task-list" style="border:1px solid var(--border);border-radius:8px;margin-bottom:12px">';
+    for (var i = 0; i < byClient[cn].length; i++) {
+      var t = byClient[cn][i];
+      var dueClass = t.due_date ? (t.due_date < today ? 'overdue' : (daysDiff(today, t.due_date) <= 3 ? 'soon' : '')) : '';
+      html += '<div class="task-item"><div class="task-check" data-action="task-toggle" data-id="' + t.id + '" data-val="1"></div><div class="task-notes">' + esc(t.notes || 'Untitled') + '</div><span class="task-assignee">' + esc(t.job_name || '') + '</span>';
+      if (t.due_date) html += '<span class="task-due ' + dueClass + '">' + formatDate(t.due_date) + '</span>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+  document.getElementById('teamDetail').innerHTML = html;
+}
+
+async function toggleTask(taskId, complete, clientId) {
+  var ep = complete ? '/api/tasks/' + taskId + '/complete' : '/api/tasks/' + taskId + '/reopen';
+  await fetch(API + ep, { method: 'POST' });
+  if (clientId) { loadClient(clientId) }
+  fetch(API + '/api/dashboard').then(function(r) { return r.json() }).then(function(d) { dashboardData = d });
+}
+
+async function completeJob(jobId, clientId) {
+  await fetch(API + '/api/jobs/' + jobId + '/complete', { method: 'POST' });
+  if (clientId) { loadClient(clientId) }
+  fetch(API + '/api/dashboard').then(function(r) { return r.json() }).then(function(d) { dashboardData = d });
+}
+
+async function reopenJob(jobId, clientId) {
+  await fetch(API + '/api/jobs/' + jobId + '/reopen', { method: 'POST' });
+  if (clientId) { loadClient(clientId) }
+  fetch(API + '/api/dashboard').then(function(r) { return r.json() }).then(function(d) { dashboardData = d });
+}
+
+function toggleAddJob(clientId) {
+  var f = document.getElementById('addJobForm-' + clientId);
+  f.classList.toggle('show');
+  var inp = document.getElementById('newJobName-' + clientId);
+  if (inp) inp.focus();
+}
+
+async function createJob(clientId) {
+  var inp = document.getElementById('newJobName-' + clientId);
+  if (!inp.value.trim()) return;
+  await fetch(API + '/api/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, name: inp.value.trim() }) });
+  loadClient(clientId);
+}
+
+function toggleAddTask(jobId) {
+  var f = document.getElementById('addTaskForm-' + jobId);
+  f.classList.toggle('show');
+  var inp = document.getElementById('newTaskNotes-' + jobId);
+  if (inp) inp.focus();
+}
+
+async function createTask(jobId, clientId) {
+  var notes = document.getElementById('newTaskNotes-' + jobId);
+  var assign = document.getElementById('newTaskAssign-' + jobId);
+  var due = document.getElementById('newTaskDue-' + jobId);
+  if (!notes.value.trim()) return;
+  await fetch(API + '/api/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_id: jobId, client_id: clientId, notes: notes.value.trim(), assigned_to: assign.value, due_date: due.value }) });
+  loadClient(clientId);
+}
+
+function showDashboard() {
+  if (currentMode === 'jobs') {
+    document.getElementById('dashboard').classList.remove('hidden');
+    document.getElementById('detail').classList.add('hidden');
+    document.getElementById('teamDetail').classList.add('hidden');
+    document.getElementById('navBack').style.display = 'none';
+    currentClientId = null;
+    if (dashboardData) renderDashboard(); else loadDashboard();
+  }
+}
+
+// ══════════════════════════════════════════════
+// ── SPRINT MODE ──
+// ══════════════════════════════════════════════
+
+function renderSprintClientBar() {
+  if (!dashboardData) {
+    fetch(API + '/api/dashboard').then(function(r) { return r.json() }).then(function(d) {
+      dashboardData = d;
+      renderSprintClientBar();
+    });
+    return;
+  }
+  var clients = dashboardData.clients;
+  var sprintClients = clients.filter(function(c) { return c.has_sprint === 1 });
+  var html = '';
+  for (var i = 0; i < sprintClients.length; i++) {
+    var c = sprintClients[i];
+    html += '<button class="sprint-client-btn' + (sprintClientId === c.id ? ' active' : '') + '" data-action="sprint-select-client" data-id="' + c.id + '">' + esc(c.name) + '</button>';
+  }
+  html += '<button class="sprint-activate-btn" data-action="sprint-activate">+ Activate Sprint</button>';
+  document.getElementById('sprintClientBar').innerHTML = html;
+}
+
+async function loadSprintClient(clientId) {
+  sprintClientId = clientId;
+  sprintPhase = 'preSprint';
+  document.getElementById('sprintContent').innerHTML = '<div class="loading">Loading checklist...</div>';
+  renderSprintClientBar();
+
+  var res = await fetch(API + '/api/sprint/' + clientId);
+  var data = await res.json();
+  sprintItems = {};
+  for (var i = 0; i < data.items.length; i++) {
+    var item = data.items[i];
+    sprintItems[item.task_id] = { completed: item.completed, completed_by: item.completed_by, completed_date: item.completed_date };
+  }
+  renderSprintChecklist();
+}
+
+function getSprintStats() {
+  var total = 0, done = 0;
+  var phaseStats = {};
+  for (var p = 0; p < SPRINT_PHASES.length; p++) {
+    var phase = SPRINT_PHASES[p];
+    phaseStats[phase.id] = { total: 0, done: 0 };
+    for (var s = 0; s < phase.sections.length; s++) {
+      var sec = SPRINT_SECTIONS[phase.sections[s]];
+      for (var i = 0; i < sec.items.length; i++) {
+        total++;
+        phaseStats[phase.id].total++;
+        var item = sprintItems[sec.items[i].id];
+        if (item && item.completed) {
+          done++;
+          phaseStats[phase.id].done++;
+        }
+      }
+    }
+  }
+  return { total: total, done: done, phaseStats: phaseStats };
+}
+
+function renderSprintChecklist() {
+  var stats = getSprintStats();
+  var pct = stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : 0;
+
+  var html = '';
+
+  // Overall progress
+  html += '<div class="sprint-progress-wrap">';
+  html += '<div class="sprint-progress-header"><span class="pct">' + pct + '%</span><span class="counts">' + stats.done + ' / ' + stats.total + ' tasks complete</span></div>';
+  html += '<div class="sprint-progress-bar"><div class="sprint-progress-fill" style="width:' + pct + '%"></div></div>';
+  html += '</div>';
+
+  // Phase nav
+  html += '<div class="phase-nav">';
+  for (var p = 0; p < SPRINT_PHASES.length; p++) {
+    var phase = SPRINT_PHASES[p];
+    var ps = stats.phaseStats[phase.id];
+    var ppct = ps.total > 0 ? Math.round((ps.done / ps.total) * 100) : 0;
+    html += '<button class="phase-btn' + (sprintPhase === phase.id ? ' active' : '') + '" data-action="sprint-phase" data-id="' + phase.id + '">';
+    html += '<span class="phase-name">' + phase.name + '</span>';
+    html += '<span class="phase-sub">' + phase.subtitle + '</span>';
+    html += '<span class="phase-pct">' + ppct + '% &middot; ' + ps.done + '/' + ps.total + '</span>';
+    html += '</button>';
+  }
+  html += '</div>';
+
+  // Sections for active phase
+  var activePhase = SPRINT_PHASES.filter(function(p) { return p.id === sprintPhase })[0];
+  if (activePhase) {
+    for (var s = 0; s < activePhase.sections.length; s++) {
+      var secKey = activePhase.sections[s];
+      var sec = SPRINT_SECTIONS[secKey];
+      var secDone = 0, secTotal = sec.items.length;
+      for (var i = 0; i < sec.items.length; i++) {
+        var item = sprintItems[sec.items[i].id];
+        if (item && item.completed) secDone++;
+      }
+      html += '<div class="sprint-section">';
+      html += '<div class="sprint-section-header" data-action="sprint-toggle-section">';
+      html += '<span class="sprint-section-title">' + esc(sec.title) + '</span>';
+      html += '<span class="sprint-section-count"><span class="done-count">' + secDone + '</span> / ' + secTotal + '</span>';
+      html += '</div>';
+      html += '<div class="sprint-section-items">';
+      for (var i = 0; i < sec.items.length; i++) {
+        var task = sec.items[i];
+        var state = sprintItems[task.id];
+        var isDone = state && state.completed;
+        html += '<div class="checklist-item" data-action="sprint-toggle-item" data-id="' + task.id + '">';
+        html += '<div class="checklist-circle' + (isDone ? ' done' : '') + '"></div>';
+        html += '<span class="checklist-label' + (isDone ? ' done' : '') + '">' + esc(task.label) + '</span>';
+        if (task.critical) html += '<span class="checklist-badge critical">Critical</span>';
+        if (isDone && state.completed_by) html += '<span class="checklist-by">' + esc(state.completed_by) + '</span>';
+        html += '</div>';
+      }
+      html += '</div></div>';
+    }
+  }
+
+  document.getElementById('sprintContent').innerHTML = html;
+}
+
+async function toggleSprintItem(taskId) {
+  if (!sprintClientId) return;
+  // Optimistic update
+  var state = sprintItems[taskId];
+  if (state && state.completed) {
+    state.completed = 0;
+    state.completed_by = '';
+    state.completed_date = '';
+  } else {
+    sprintItems[taskId] = { completed: 1, completed_by: 'Robbie', completed_date: new Date().toISOString().split('T')[0] };
+  }
+  renderSprintChecklist();
+
+  // API call
+  await fetch(API + '/api/sprint/toggle', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id: sprintClientId, task_id: taskId, completed_by: 'Robbie' })
+  });
+}
+
+// ── Activate Sprint Modal ──
+function showActivateModal() {
+  if (!dashboardData) return;
+  var clients = dashboardData.clients.filter(function(c) { return !c.has_sprint });
+  var html = '<div class="activate-modal-overlay" id="activateOverlay">';
+  html += '<div class="activate-modal">';
+  html += '<h3>Activate 30-Day Sprint</h3>';
+  html += '<label>Client</label>';
+  html += '<select id="activateClientSelect">';
+  for (var i = 0; i < clients.length; i++) {
+    html += '<option value="' + clients[i].id + '">' + esc(clients[i].name) + '</option>';
+  }
+  html += '</select>';
+  html += '<label>Start Date</label>';
+  html += '<input type="date" id="activateDate" value="' + new Date().toISOString().split('T')[0] + '">';
+  html += '<div class="activate-modal-actions">';
+  html += '<button class="cancel-btn" data-action="sprint-activate-cancel">Cancel</button>';
+  html += '<button class="confirm-btn" data-action="sprint-activate-confirm">Activate</button>';
+  html += '</div></div></div>';
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function closeActivateModal() {
+  var overlay = document.getElementById('activateOverlay');
+  if (overlay) overlay.remove();
+}
+
+async function activateSprintClient() {
+  var sel = document.getElementById('activateClientSelect');
+  var date = document.getElementById('activateDate');
+  if (!sel || !sel.value) return;
+  await fetch(API + '/api/sprint/activate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id: sel.value, start_date: date.value })
+  });
+  closeActivateModal();
+  // Refresh dashboard data to pick up has_sprint change
+  var res = await fetch(API + '/api/dashboard');
+  dashboardData = await res.json();
+  renderSprintClientBar();
+  loadSprintClient(sel.value);
+}
+
+// ══════════════════════════════════════════════
+// ── EMAIL INTEL MODE ──
+// ══════════════════════════════════════════════
+
+var EMAIL_TYPE_LABELS = {
+  formspree_lead: 'FormSpree Lead',
+  chatbot_lead: 'Chatbot Lead',
+  jotform_lead: 'JotForm Lead',
+  pixel_data: 'Pixel Data',
+  client_mention: 'Client Mention'
+};
+
+async function loadEmailLogs() {
+  document.getElementById('emailContent').innerHTML = '<div class="loading">Loading email data...</div>';
+  var res = await fetch(API + '/api/email-logs');
+  emailData = await res.json();
+  renderEmailLogs();
+}
+
+function renderEmailLogs() {
+  if (!emailData) return;
+  var logs = emailData.logs || [];
+  var ps = emailData.pixel_status || { status: 'missing', hours_ago: null };
+
+  // Summary bar
+  var todayStr = new Date().toISOString().split('T')[0];
+  var leadsToday = logs.filter(function(l) {
+    return (l.received_at||'').split('T')[0] === todayStr &&
+      (l.email_type === 'formspree_lead' || l.email_type === 'chatbot_lead' || l.email_type === 'jotform_lead');
+  }).length;
+
+  var pixelHtml = ps.status === 'ok'
+    ? '<span class="esb-value ok">' + ps.hours_ago + 'h ago</span>'
+    : '<span class="esb-value missing">MISSING</span>';
+
+  var html = '<div class="email-summary-bar">';
+  html += '<div class="esb-item">Leads today:&nbsp;<span class="esb-value">' + leadsToday + '</span></div>';
+  html += '<span class="esb-sep">|</span>';
+  html += '<div class="esb-item">Last pixel data:&nbsp;' + pixelHtml + '</div>';
+  html += '</div>';
+
+  if (logs.length === 0) {
+    html += '<div class="email-empty">No email logs — all dismissed or scanner hasn\'t run yet.</div>';
+    document.getElementById('emailContent').innerHTML = html;
+    return;
+  }
+
+  // Group by Today / Yesterday / This Week
+  var yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  var groups = { 'Today': [], 'Yesterday': [], 'This Week': [] };
+  for (var i = 0; i < logs.length; i++) {
+    var d = (logs[i].received_at || '').split('T')[0];
+    if (d === todayStr) groups['Today'].push(logs[i]);
+    else if (d === yesterday) groups['Yesterday'].push(logs[i]);
+    else groups['This Week'].push(logs[i]);
+  }
+
+  ['Today','Yesterday','This Week'].forEach(function(grp) {
+    var gl = groups[grp];
+    if (!gl.length) return;
+    html += '<div class="email-group-label">' + grp + ' &middot; ' + gl.length + '</div>';
+    html += '<table class="email-log-table"><thead><tr>';
+    html += '<th>Time</th><th>Type</th><th>Client</th><th>Subject</th><th>From</th><th></th>';
+    html += '</tr></thead><tbody>';
+    for (var j = 0; j < gl.length; j++) {
+      var l = gl[j];
+      var t = l.received_at ? new Date(l.received_at).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true}) : '';
+      var badge = EMAIL_TYPE_LABELS[l.email_type] || l.email_type;
+      html += '<tr>';
+      html += '<td><span class="email-time">' + esc(t) + '</span></td>';
+      html += '<td><span class="email-type-badge ' + esc(l.email_type) + '">' + esc(badge) + '</span></td>';
+      html += '<td>' + (l.client_name ? '<span class="email-client-badge" title="' + esc(l.client_name) + '">' + esc(l.client_name) + '</span>' : '<span style="color:var(--text-dim);font-size:12px">—</span>') + '</td>';
+      html += '<td><div class="email-subject" title="' + esc(l.subject) + '">' + esc(l.subject || '(no subject)') + '</div></td>';
+      html += '<td><div class="email-sender" title="' + esc(l.sender) + '">' + esc(l.sender) + '</div></td>';
+      html += '<td><button class="email-dismiss-btn" data-action="email-dismiss" data-id="' + esc(l.id) + '">Dismiss</button></td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+  });
+
+  document.getElementById('emailContent').innerHTML = html;
+}
+
+async function dismissEmailLog(logId) {
+  // Optimistic remove
+  if (emailData && emailData.logs) {
+    emailData.logs = emailData.logs.filter(function(l) { return l.id !== logId; });
+    renderEmailLogs();
+  }
+  await fetch(API + '/api/email-logs/' + logId, { method: 'DELETE' });
+}
+
+// ── Init ──
+loadDashboard();
+</script>
+</body>
+</html>

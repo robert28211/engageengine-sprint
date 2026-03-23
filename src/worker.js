@@ -1,5 +1,6 @@
 import HTML_CONTENT from './app.html';
 
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);

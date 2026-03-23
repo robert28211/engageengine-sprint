@@ -2,7 +2,7 @@ name: Deploy Worker
 
 on:
   push:
-    branches: [main]
+    branches: [deploy-enabled]
     paths:
       - 'src/**'
       - 'wrangler.toml'

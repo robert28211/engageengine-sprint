@@ -1,0 +1,7 @@
+{
+  "name": "email-scanner",
+  "private": true,
+  "dependencies": {
+    "imapflow": "^1.0.162"
+  }
+}

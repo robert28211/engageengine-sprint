@@ -5872,7 +5872,7 @@ function normActivityDomain(d) {
 __name(normActivityDomain, "normActivityDomain");
 async function handleActivityIngest(request, env) {
   const sec = request.headers.get("X-Internal-Secret");
-  const ok = !!sec && ((env.INTERNAL_AUDIT_SECRET && sec === env.INTERNAL_AUDIT_SECRET) || (env.ROSTER_READ_SECRET && sec === env.ROSTER_READ_SECRET));
+  const ok = !!sec && ((env.INTERNAL_AUDIT_SECRET && sec === env.INTERNAL_AUDIT_SECRET) || (env.ROSTER_READ_SECRET && sec === env.ROSTER_READ_SECRET) || (env.SESSION_LOG_SECRET && sec === env.SESSION_LOG_SECRET));
   if (!ok) return json({ error: "Unauthorized" }, 401);
   const body = await request.json().catch(() => ({}));
   const tool = body.tool && String(body.tool).trim();

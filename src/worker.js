@@ -5901,10 +5901,24 @@ async function handleActivityIngest(request, env) {
   const expectedOutcome = body.expected_outcome != null && String(body.expected_outcome).trim() !== "" ? String(body.expected_outcome).trim() : null;
   let reviewDays = body.review_days != null && body.review_days !== "" ? Math.max(1, Math.round(Number(body.review_days))) : null;
   if (!reviewDays && expectedOutcome) reviewDays = 30;
+  // Optional historical stamp. Backfilling a record of past work must date each row
+  // WHEN THE WORK HAPPENED, not when it was ingested — otherwise a backfill claims
+  // months of work all landed today. Strict format, never trusted blindly, and it
+  // cannot be in the future. Omit it and the column default (now) applies as before.
+  let occurredAt = null;
+  if (body.occurred_at != null && String(body.occurred_at).trim() !== "") {
+    const raw = String(body.occurred_at).trim();
+    const m = raw.match(/^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2})?))?$/);
+    if (!m) return json({ error: "occurred_at must be YYYY-MM-DD or YYYY-MM-DD HH:MM[:SS]" }, 400);
+    const stamp = m[2] ? `${m[1]} ${m[2].length === 5 ? m[2] + ":00" : m[2]}` : `${m[1]} 12:00:00`;
+    if (Number.isNaN(Date.parse(stamp.replace(" ", "T") + "Z"))) return json({ error: "occurred_at is not a real date" }, 400);
+    if (Date.parse(stamp.replace(" ", "T") + "Z") > Date.now() + 86400000) return json({ error: "occurred_at cannot be in the future" }, 400);
+    occurredAt = stamp;
+  }
   const ins = await env.DB.prepare(
-    `INSERT INTO client_activity (client_id, client_name, tool, kind, score, summary, artifact_url, expected_outcome, review_at)
-     VALUES (?,?,?,?,?,?,?,?, CASE WHEN ?9 IS NULL THEN NULL ELSE date('now', '+' || ?9 || ' days') END)`
-  ).bind(clientId, clientName, tool, kind, score, summary, artifactUrl, expectedOutcome, reviewDays).run();
+    `INSERT INTO client_activity (client_id, client_name, tool, kind, score, summary, artifact_url, expected_outcome, review_at, created_at)
+     VALUES (?,?,?,?,?,?,?,?, CASE WHEN ?9 IS NULL THEN NULL ELSE date('now', '+' || ?9 || ' days') END, COALESCE(?10, CURRENT_TIMESTAMP))`
+  ).bind(clientId, clientName, tool, kind, score, summary, artifactUrl, expectedOutcome, reviewDays, occurredAt).run();
   // Routine auto-completion: if a routine step is tagged with this tool, mark the
   // client's open instances of that step Complete (best-effort; exact tool match).
   let autoCompleted = 0;

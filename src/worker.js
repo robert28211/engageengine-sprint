@@ -150,6 +150,15 @@ async function handleLogin(request, env) {
   return json({ ok: true }, 200, { "Set-Cookie": cookie });
 }
 __name(handleLogin, "handleLogin");
+// Decide-or-kill: an open task nobody has touched in 14+ days and that isn't
+// scheduled for later is stuck. It gets a forced choice (do today / shrink /
+// kill) instead of rotting quietly. Any edit resets updated_at, so re-dating
+// or rewording counts as a decision. Routine cadence tasks are excluded: the
+// reaper owns those. Expects sprint_tasks aliased as t.
+const STALE_TASK_SQL = `t.status='Not Started'
+  AND date(t.updated_at) <= date('now','-14 days')
+  AND (t.due_date IS NULL OR t.due_date = '' OR t.due_date <= date('now'))
+  AND NOT EXISTS (SELECT 1 FROM routine_generation rg WHERE rg.job_id = t.job_id)`;
 async function handleDashboard(request, env) {
   const clients = await env.DB.prepare(`
     SELECT c.id, c.name, c.status, c.has_sprint, c.archived,
@@ -193,6 +202,12 @@ async function handleDashboard(request, env) {
     LEFT JOIN sprint_jobs j ON j.client_id = c.id
     WHERE c.archived = 0
   `).first();
+  if (briefing) {
+    const st = await env.DB.prepare(
+      `SELECT COUNT(*) as n FROM sprint_tasks t JOIN sprint_clients c ON c.id = t.client_id WHERE c.archived = 0 AND ${STALE_TASK_SQL}`
+    ).first();
+    briefing.stale = st?.n || 0;
+  }
   let intake_pending = 0;
   try {
     const ip = await env.DB.prepare(
@@ -220,6 +235,8 @@ async function handleAllWork(request, env) {
   `).all();
   const tasks = await env.DB.prepare(`
     SELECT t.id, t.notes as name, t.status, t.due_date, t.assigned_to,
+      CASE WHEN ${STALE_TASK_SQL}
+        THEN CAST(julianday(date('now')) - julianday(date(t.updated_at)) AS INTEGER) ELSE 0 END as stale_days,
       j.id as job_id, j.name as job_name,
       c.id as client_id, c.name as client_name
     FROM sprint_tasks t
@@ -2334,6 +2351,12 @@ body{padding-bottom:80px}
 .allwork-due.overdue{color:var(--red)}
 .allwork-due.soon{color:var(--amber)}
 .allwork-due.ok{color:var(--text-dim)}
+.allwork-stale{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:10px;font-size:11px;font-weight:600;font-family:"JetBrains Mono",monospace;background:var(--amber-bg);color:var(--amber);cursor:pointer;white-space:nowrap}
+.allwork-stale-note{font-size:13px;color:var(--text-dim);margin-bottom:12px}
+.decide-btn{font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text);cursor:pointer}
+.decide-btn:hover{border-color:var(--accent);color:var(--accent)}
+.decide-btn.kill:hover{border-color:var(--red);color:var(--red);background:var(--red-bg)}
+.briefing-stale{margin-left:8px;font-weight:600;color:var(--amber);cursor:pointer;text-decoration:underline}
 .allwork-assignee{font-size:12px;color:var(--text-dim)}
 .allwork-editable-cell{cursor:pointer}
 .allwork-editable-cell:hover{background:var(--surface2)!important}
@@ -2681,6 +2704,10 @@ document.addEventListener('click', function(e) {
   else if (act === 'allwork-tab') { switchAllWorkTab(val); }
   else if (act === 'allwork-goto-client') { switchMode('jobs'); loadClient(id); }
   else if (act === 'allwork-job-complete') { completeAllWorkJob(id); }
+  else if (act === 'stale-today') { staleDoToday(id); }
+  else if (act === 'stale-shrink') { staleShrink(id); }
+  else if (act === 'stale-kill') { staleKill(id); }
+  else if (act === 'goto-stale') { allWorkTab = 'stale'; switchMode('allwork'); }
   else if (act === 'allwork-job-edit') { openAllWorkJobEdit(el); }
   else if (act === 'allwork-job-save') { saveAllWorkJobEdit(id); }
   else if (act === 'allwork-job-cancel') { renderAllWork(); }
@@ -2987,6 +3014,10 @@ function renderAllWork() {
   html += '<div class="allwork-subtabs">';
   html += '<button class="allwork-subtab' + (allWorkTab === 'jobs' ? ' active' : '') + '" data-action="allwork-tab" data-val="jobs">Jobs (' + totalJobs + ')</button>';
   html += '<button class="allwork-subtab' + (allWorkTab === 'tasks' ? ' active' : '') + '" data-action="allwork-tab" data-val="tasks">Open Tasks (' + openTasks + ')</button>';
+  var staleTasks = d.tasks.filter(function(t) { return t.stale_days > 0; });
+  if (staleTasks.length || allWorkTab === 'stale') {
+    html += '<button class="allwork-subtab' + (allWorkTab === 'stale' ? ' active' : '') + '" data-action="allwork-tab" data-val="stale">Decide (' + staleTasks.length + ')</button>';
+  }
   html += '</div>';
 
   if (allWorkTab === 'jobs') {
@@ -3017,6 +3048,30 @@ function renderAllWork() {
       }
       html += '</tbody></table>';
     }
+  } else if (allWorkTab === 'stale') {
+    if (!staleTasks.length) {
+      html += '<div class="allwork-empty">Nothing stuck. Every open task has moved in the last 14 days.</div>';
+    } else {
+      staleTasks = staleTasks.slice().sort(function(a, b) { return b.stale_days - a.stale_days; });
+      html += '<div class="allwork-stale-note">Open 14+ days with no movement. Do it today, cut it smaller, or kill it.</div>';
+      html += '<table class="allwork-table"><thead><tr>';
+      html += '<th>Client</th><th>Task</th><th>Decide</th><th>Job</th>';
+      html += '</tr></thead><tbody>';
+      for (var s = 0; s < staleTasks.length; s++) {
+        var st = staleTasks[s];
+        html += '<tr id="allwork-stale-row-' + st.id + '">';
+        html += '<td><a class="allwork-client-link" data-action="allwork-goto-client" data-id="' + esc(st.client_id) + '">' + esc(st.client_name) + '</a></td>';
+        html += '<td>' + esc(st.name) + ' <span class="allwork-stale">' + st.stale_days + 'd</span></td>';
+        html += '<td style="white-space:nowrap">';
+        html += '<button class="decide-btn" data-action="stale-today" data-id="' + st.id + '">Do today</button> ';
+        html += '<button class="decide-btn" data-action="stale-shrink" data-id="' + st.id + '">Shrink</button> ';
+        html += '<button class="decide-btn kill" data-action="stale-kill" data-id="' + st.id + '">Kill</button>';
+        html += '</td>';
+        html += '<td>' + esc(st.job_name) + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+    }
   } else {
     if (!d.tasks.length) {
       html += '<div class="allwork-empty">No open tasks \u2014 all caught up!</div>';
@@ -3035,7 +3090,7 @@ function renderAllWork() {
         html += '<tr>';
         html += '<td><a class="allwork-client-link" data-action="allwork-goto-client" data-id="' + esc(t.client_id) + '">' + esc(t.client_name) + '</a></td>';
         html += '<td>' + esc(t.job_name) + '</td>';
-        html += '<td>' + esc(t.name) + '</td>';
+        html += '<td>' + esc(t.name) + (t.stale_days > 0 ? ' <span class="allwork-stale" data-action="allwork-tab" data-val="stale" title="Untouched ' + t.stale_days + ' days. Decide or kill.">' + t.stale_days + 'd</span>' : '') + '</td>';
         html += '<td><span class="allwork-assignee">' + esc(t.assigned_to || '\u2014') + '</span></td>';
         html += '<td><span class="allwork-due ' + dueClass + '">' + esc(dueLabel) + '</span></td>';
         html += '</tr>';
@@ -3078,6 +3133,50 @@ async function saveAllWorkJobEdit(jobId) {
   await loadAllWork();
 }
 
+function staleTaskById(taskId) {
+  return allWorkData ? (allWorkData.tasks || []).find(function(t) { return t.id === taskId; }) : null;
+}
+
+function localToday() {
+  var n = new Date();
+  return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
+}
+
+async function putStaleTask(t, notes, dueDate) {
+  var res = await fetch(API + '/api/tasks/' + t.id, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notes: notes, assigned_to: t.assigned_to || '', due_date: dueDate })
+  });
+  if (!res.ok) { alert('Save failed — please try again'); return; }
+  await loadAllWork();
+}
+
+async function staleDoToday(taskId) {
+  var t = staleTaskById(taskId);
+  if (!t) return;
+  await putStaleTask(t, t.name || '', localToday());
+}
+
+async function staleShrink(taskId) {
+  var t = staleTaskById(taskId);
+  if (!t) return;
+  var smaller = prompt('Cut it to a first step you can start today:', t.name || '');
+  if (smaller === null) return;
+  smaller = smaller.trim();
+  if (!smaller) return;
+  await putStaleTask(t, smaller, t.due_date || '');
+}
+
+async function staleKill(taskId) {
+  var t = staleTaskById(taskId);
+  if (!t) return;
+  if (!confirm('Kill this task? It is deleted, not completed.\\n\\n' + (t.client_name || '') + ': ' + (t.name || ''))) return;
+  var res = await fetch(API + '/api/tasks/' + taskId, { method: 'DELETE' });
+  if (!res.ok) { alert('Delete failed — please try again'); return; }
+  await loadAllWork();
+}
+
 async function completeAllWorkJob(jobId) {
   await fetch(API + '/api/jobs/' + jobId + '/complete', { method: 'POST' });
   loadAllWork();
@@ -3111,11 +3210,12 @@ function renderDashboard() {
   var clients = d.clients, stats = d.stats, team = d.team, briefing = d.briefing;
   // Briefing banner
   var bb = document.getElementById('briefingBanner');
-  if (briefing && (briefing.overdue > 0 || briefing.due_today > 0)) {
+  if (briefing && (briefing.overdue > 0 || briefing.due_today > 0 || briefing.stale > 0)) {
     var parts = [];
     if (briefing.overdue > 0) parts.push('<strong>' + briefing.overdue + ' overdue</strong>');
     if (briefing.due_today > 0) parts.push('<strong>' + briefing.due_today + ' due today</strong>');
-    bb.innerHTML = '<div class="briefing-banner"><span>&#9888; ' + parts.join(', ') + ' \u2014 check client cards below</span><button class="briefing-dismiss" data-action="dismiss-briefing" title="Dismiss">&times;</button></div>';
+    var staleLink = briefing.stale > 0 ? ' <a class="briefing-stale" data-action="goto-stale">' + briefing.stale + ' stuck 14+ days \u2014 decide or kill</a>' : '';
+    bb.innerHTML = '<div class="briefing-banner"><span>&#9888; ' + (parts.length ? parts.join(', ') + ' \u2014 check client cards below' : '') + staleLink + '</span><button class="briefing-dismiss" data-action="dismiss-briefing" title="Dismiss">&times;</button></div>';
   } else if (briefing) {
     bb.innerHTML = '<div class="briefing-clear"><span>&#10003; All clear \u2014 no overdue or due-today tasks</span><button class="briefing-dismiss" data-action="dismiss-briefing" title="Dismiss">&times;</button></div>';
   }

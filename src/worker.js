@@ -131,6 +131,8 @@ var ROUTES = [
   { method: "POST", re: /^\/api\/activity\/([0-9]+)\/outcome$/, handler: (r, e, m) => handleActivityOutcome(r, e, m[1]) },
   // Services & Maintenance
   { method: "GET", re: /^\/api\/services$/, handler: handleServicesList, readKey: true },
+  // Client Access Board — services wanted vs platform ids pinned (session gated)
+  { method: "GET", re: /^\/api\/access$/, handler: handleAccessBoard, readKey: true },
   { method: "PATCH", re: /^\/api\/services\/([^/]+)\/([^/]+)$/, handler: (r, e, m) => handleServiceUpdate(r, e, m[1], m[2]) },
   { method: "GET", re: /^\/api\/maintenance$/, handler: handleMaintenanceList },
   { method: "GET", re: /^\/api\/maintenance\/wp\/([^/]+)$/, handler: (r, e, m) => handleMaintenanceWp(r, e, m[1]) },
@@ -271,9 +273,10 @@ async function handleClientGet(request, env, clientId) {
     ORDER BY CASE j.status WHEN 'Active' THEN 0 ELSE 1 END, j.name
   `).bind(clientId).all();
   const tasks = await env.DB.prepare(`
-    SELECT t.*, j.name as job_name
+    SELECT t.*, j.name as job_name, COALESCE(tt.tool_key,'') AS tool_key
     FROM sprint_tasks t
     LEFT JOIN sprint_jobs j ON j.id = t.job_id
+    LEFT JOIN sprint_template_tasks tt ON tt.id = REPLACE(t.task_id,'tmpl-','')
     WHERE t.client_id=?
     ORDER BY CASE t.status WHEN 'Not Started' THEN 0 WHEN 'In Progress' THEN 1 ELSE 2 END, t.due_date
   `).bind(clientId).all();
@@ -520,6 +523,64 @@ async function handleSprintToggle(request, env) {
   return json({ success: true });
 }
 __name(handleSprintToggle, "handleSprintToggle");
+// ── Client Access Board ──────────────────────────────────────────────────────
+// A service flipped on in client_services says we WANT the platform. A row in
+// client_platform_ids says we can actually QUERY it. The gap between the two is
+// exactly the hole Charlotte Dumpster Rentals sat in for 30 days (GA4-only
+// footprint, "no Google Ads customer id", "not in the GBP roster"). This board
+// shows the gap per client, and the sprint-start gate refuses while it is open.
+const ACCESS_PINS = [
+  { service: "gads",        col: "gads_cid",      label: "Google Ads",     how: "/client-connect (MCC inventory) or paste the 10-digit customer id" },
+  { service: "ga4",         col: "ga4_pid",       label: "GA4",            how: "/client-connect (GA4 property list) — access must be granted to marketingperformancemcc@gmail.com first" },
+  { service: "gbp",         col: "gbp_locations", label: "GBP",            how: "/client-connect (gbp-intelligence sync) — client must add the agency as a Manager first" },
+  { service: "meta",        col: "meta_aid",      label: "Meta",           how: "/client-connect (ad account list) — client must grant partner access in Business Manager first" },
+  { service: "clarity",     col: "clarity_pid",   label: "Clarity",        how: "hand-entered: project id from the Clarity dashboard + per-client token via clarity_token.py" },
+  { service: "audiencelab", col: "al_id",         label: "Intent data",    how: "/client-connect (audience list) — audience must exist in AudienceLab first" },
+  { service: "pixel",       col: "pixel_file_id", label: "Pixel",          how: "/client-connect (shared pixel-sheets folder) — pixel sheet must exist first" }
+];
+const WANTED_STATUSES = /* @__PURE__ */ new Set(["active", "pending", "paused"]);
+async function accessRows(env, onlyClientId) {
+  const where = onlyClientId ? "WHERE c.archived=0 AND c.id=?" : "WHERE c.archived=0";
+  const q = env.DB.prepare(`SELECT c.id, c.name, c.has_sprint, c.on_routine, c.vendasta_account_id, c.domain,
+      p.gads_cid, p.ga4_pid, p.gbp_locations, p.meta_aid, p.clarity_pid, p.al_id, p.pixel_file_id, p.contact_email, p.updated_at AS pins_updated
+     FROM sprint_clients c LEFT JOIN client_platform_ids p ON p.client_id=c.id ${where} ORDER BY c.name`);
+  const clients = (await (onlyClientId ? q.bind(onlyClientId) : q).all()).results;
+  const svcQ = env.DB.prepare(onlyClientId ? "SELECT client_id, service, status FROM client_services WHERE client_id=?" : "SELECT client_id, service, status FROM client_services");
+  const svcs = (await (onlyClientId ? svcQ.bind(onlyClientId) : svcQ).all()).results;
+  const svcMap = {};
+  for (const s of svcs) (svcMap[s.client_id] = svcMap[s.client_id] || {})[s.service] = s.status;
+  return clients.map((c) => {
+    const sv = svcMap[c.id] || {};
+    const platforms = {};
+    const missing = [];
+    for (const pin of ACCESS_PINS) {
+      const status = sv[pin.service] || "none";
+      const wanted = WANTED_STATUSES.has(status);
+      let raw = c[pin.col];
+      if (pin.col === "gbp_locations") { try { const arr = JSON.parse(raw || "[]"); raw = Array.isArray(arr) && arr.length ? arr.join(", ") : ""; } catch (e) { raw = raw || ""; } }
+      const pinned = !!(raw && String(raw).trim());
+      platforms[pin.service] = { label: pin.label, status, wanted, pinned, id: pinned ? String(raw) : "", how: pin.how };
+      if (wanted && !pinned) missing.push(pin.label);
+    }
+    const crmStatus = sv.crm || "none";
+    const crmWanted = WANTED_STATUSES.has(crmStatus);
+    const crmPinned = !!(c.vendasta_account_id && String(c.vendasta_account_id).trim());
+    platforms.crm = { label: "Vendasta", status: crmStatus, wanted: crmWanted, pinned: crmPinned, id: crmPinned ? c.vendasta_account_id : "", how: "paste the Vendasta account id (AG-…) into the client's Vendasta field" };
+    if (crmWanted && !crmPinned) missing.push("Vendasta");
+    const emailWanted = WANTED_STATUSES.has(sv.weekly_email || "none");
+    const emailPinned = !!(c.contact_email && String(c.contact_email).trim());
+    platforms.weekly_email = { label: "Recap email", status: sv.weekly_email || "none", wanted: emailWanted, pinned: emailPinned, id: emailPinned ? c.contact_email : "", how: "contact_email in client_platform_ids + send:true in weekly-emails/clients.json" };
+    if (emailWanted && !emailPinned) missing.push("Recap email");
+    const wantedCount = Object.values(platforms).filter((p) => p.wanted).length;
+    return { id: c.id, name: c.name, domain: c.domain || "", has_sprint: c.has_sprint, on_routine: c.on_routine, pins_updated: c.pins_updated || null, platforms, missing, wanted_count: wantedCount, ready: wantedCount > 0 && missing.length === 0 };
+  });
+}
+__name(accessRows, "accessRows");
+async function handleAccessBoard(request, env) {
+  const rows = await accessRows(env, null);
+  return json({ generated_at: (/* @__PURE__ */ new Date()).toISOString(), clients: rows });
+}
+__name(handleAccessBoard, "handleAccessBoard");
 async function handleSprintActivate(request, env) {
   const body = await request.json().catch(() => ({}));
   const { client_id, start_date } = body;
@@ -528,6 +589,14 @@ async function handleSprintActivate(request, env) {
   ).bind(client_id).first();
   if (exists)
     return json({ error: "Already enrolled" }, 409);
+  // GATE: every wanted platform must be pinned before the sprint starts.
+  // Robbie can override from the API with {"override_by":"Robbie"}; the UI never sends it.
+  const access = (await accessRows(env, client_id))[0];
+  if (!access) return json({ error: "Unknown client" }, 404);
+  if (access.wanted_count === 0 && body.override_by !== "Robbie")
+    return json({ error: "No services are turned on for this client yet. Set the service flags on the Services tab first.", missing: [], gate: "no_services" }, 409);
+  if (access.missing.length && body.override_by !== "Robbie")
+    return json({ error: "Access not confirmed: " + access.missing.join(", ") + ". Fix these on the Access tab, then start the sprint.", missing: access.missing, gate: "access" }, 409);
   await env.DB.prepare(
     `UPDATE sprint_clients SET has_sprint=1, start_date=?, updated_at=date('now') WHERE id=?`
   ).bind(start_date || (/* @__PURE__ */ new Date()).toISOString().split("T")[0], client_id).run();
@@ -740,7 +809,7 @@ async function handleRoutineJobTasks(request, env, jobId) {
   ).bind(jobId).first();
   if (!job) return json({ error: "not found" }, 404);
   const tasks = (await env.DB.prepare(
-    "SELECT id, notes, status, assigned_to, due_date FROM sprint_tasks WHERE job_id=? ORDER BY created_at"
+    "SELECT t.id, t.notes, t.status, t.assigned_to, t.due_date, COALESCE(tt.tool_key,'') AS tool_key FROM sprint_tasks t LEFT JOIN sprint_template_tasks tt ON tt.id = REPLACE(t.task_id,'tmpl-','') WHERE t.job_id=? ORDER BY t.created_at"
   ).bind(jobId).all()).results;
   return json({ job, tasks });
 }
@@ -2396,6 +2465,15 @@ body{padding-bottom:80px}
 .svc-website{background:var(--accent-glow);color:var(--accent)}
 .svc-none{color:var(--text-muted);font-size:16px;line-height:1}
 .svc-thru{display:block;font-size:9px;color:var(--text-muted);font-family:"JetBrains Mono",monospace;margin-top:1px;white-space:nowrap}
+/* ── Access board ── */
+.acc-ok{background:var(--green-bg);color:var(--green)}
+.acc-missing{background:var(--red-bg);color:var(--red);border:1px solid var(--red)}
+.acc-id{display:block;font-size:9px;color:var(--text-muted);font-family:"JetBrains Mono",monospace;margin-top:1px;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis}
+.acc-ready{font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;white-space:nowrap}
+.acc-ready.yes{background:var(--green-bg);color:var(--green)}.acc-ready.no{background:var(--red-bg);color:var(--red)}.acc-ready.na{background:var(--surface2);color:var(--text-muted)}
+.acc-how{font-size:11px;color:var(--text-dim);margin:14px 0 0;line-height:1.6}
+.task-tool{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;font-family:"JetBrains Mono",monospace;color:var(--accent);background:var(--accent-glow);padding:2px 7px;border-radius:6px;text-decoration:none;white-space:nowrap;margin-left:6px}
+.task-tool:hover{filter:brightness(1.1)}
 /* ── Maintenance table ── */
 .maint-table-wrap{overflow:auto;max-height:calc(100vh - 220px);border:1px solid var(--border);border-radius:10px}
 .maint-table{width:100%;border-collapse:collapse;font-size:12px;background:var(--surface)}
@@ -2513,6 +2591,7 @@ body{padding-bottom:80px}
       <button class="mode-tab" id="modeRoutineBtn" data-action="mode-routine">Routine</button>
       <button class="mode-tab" id="modeAllWorkBtn" data-action="mode-allwork">All Work</button>
       <button class="mode-tab" id="modeServicesBtn" data-action="mode-services">Services</button>
+      <button class="mode-tab" id="modeAccessBtn" data-action="mode-access">Access</button>
       <button class="mode-tab" id="modeMaintenanceBtn" data-action="mode-maintenance">Maintenance</button>
       <button class="mode-tab" id="modeHealthBtn" data-action="mode-health">Health</button>
       <button class="mode-tab" id="modeActivityBtn" data-action="mode-activity">Activity</button>
@@ -2583,6 +2662,11 @@ body{padding-bottom:80px}
 <!-- Services mode -->
 <div id="servicesMode" class="hidden">
   <div id="servicesContent"><div class="loading">Loading...</div></div>
+</div>
+
+<!-- Access mode -->
+<div id="accessMode" class="hidden">
+  <div id="accessContent"><div class="loading">Loading...</div></div>
 </div>
 
 <!-- Maintenance mode -->
@@ -2697,6 +2781,7 @@ document.addEventListener('click', function(e) {
   else if (act === 'mode-routine') { switchMode('routine'); }
   else if (act === 'mode-allwork') { switchMode('allwork'); }
   else if (act === 'mode-services') { switchMode('services'); }
+  else if (act === 'mode-access') { switchMode('access'); }
   else if (act === 'mode-maintenance') { switchMode('maintenance'); }
   else if (act === 'mode-health') { switchMode('health'); }
   else if (act === 'mode-activity') { switchMode('activity'); }
@@ -2782,6 +2867,7 @@ function switchMode(mode) {
   document.getElementById('modeRoutineBtn').classList.toggle('active', mode === 'routine');
   document.getElementById('modeAllWorkBtn').classList.toggle('active', mode === 'allwork');
   document.getElementById('modeServicesBtn').classList.toggle('active', mode === 'services');
+  document.getElementById('modeAccessBtn').classList.toggle('active', mode === 'access');
   document.getElementById('modeMaintenanceBtn').classList.toggle('active', mode === 'maintenance');
   document.getElementById('modeHealthBtn').classList.toggle('active', mode === 'health');
   document.getElementById('modeActivityBtn').classList.toggle('active', mode === 'activity');
@@ -2791,6 +2877,7 @@ function switchMode(mode) {
   document.getElementById('routineMode').classList.toggle('hidden', mode !== 'routine');
   document.getElementById('allWorkMode').classList.toggle('hidden', mode !== 'allwork');
   document.getElementById('servicesMode').classList.toggle('hidden', mode !== 'services');
+  document.getElementById('accessMode').classList.toggle('hidden', mode !== 'access');
   document.getElementById('maintenanceMode').classList.toggle('hidden', mode !== 'maintenance');
   document.getElementById('healthMode').classList.toggle('hidden', mode !== 'health');
   document.getElementById('activityMode').classList.toggle('hidden', mode !== 'activity');
@@ -2811,6 +2898,9 @@ function switchMode(mode) {
   } else if (mode === 'services') {
     document.getElementById('headerStats').style.display = 'none';
     loadServices();
+  } else if (mode === 'access') {
+    document.getElementById('headerStats').style.display = 'none';
+    loadAccessBoard();
   } else if (mode === 'maintenance') {
     document.getElementById('headerStats').style.display = 'none';
     loadMaintenance();
@@ -2960,7 +3050,7 @@ async function openRoutineDrawer(jobId) {
   for (var i=0; i<tasks.length; i++) {
     var tk = tasks[i]; var done = tk.status === 'Complete';
     h += '<label class="rt-task' + (done?' done':'') + '"><input type="checkbox" ' + (done?'checked':'') + ' onchange="toggleRoutineTask(\\'' + tk.id + '\\', this.checked)">'
-      + '<span class="rt-task-notes">' + esc(tk.notes) + '</span>'
+      + '<span class="rt-task-notes">' + esc(tk.notes) + toolChip(tk.tool_key) + '</span>'
       + (tk.assigned_to ? '<span class="rt-task-who">' + esc(tk.assigned_to) + '</span>' : '') + '</label>';
   }
   h += '</div>';
@@ -3393,7 +3483,7 @@ function renderTaskItem(t, today) {
   if (!isDone && t.due_date) { dueClass = t.due_date < today ? 'overdue' : (daysDiff(today, t.due_date) <= 3 ? 'soon' : ''); }
   var html = '<div class="task-item" id="task-row-' + t.id + '">';
   html += '<div class="task-check' + (isDone ? ' done' : '') + '" role="checkbox" aria-checked="' + (isDone ? 'true' : 'false') + '" tabindex="0" data-action="task-toggle" data-id="' + t.id + '" data-val="' + (isDone ? '0' : '1') + '"></div>';
-  html += '<div class="task-notes' + (isDone ? ' completed' : '') + '">' + esc(t.notes || 'Untitled task') + '</div>';
+  html += '<div class="task-notes' + (isDone ? ' completed' : '') + '">' + esc(t.notes || 'Untitled task') + toolChip(t.tool_key) + '</div>';
   if (t.assigned_to) html += '<span class="task-assignee">' + esc(t.assigned_to) + '</span>';
   if (t.due_date) html += '<span class="task-due ' + dueClass + '">' + formatDate(t.due_date) + '</span>';
   if (!isDone) {
@@ -4891,6 +4981,12 @@ async function activateSprintClient() {
   });
   if (!res.ok) {
     var err = await res.json();
+    if (err.gate) {
+      alert((err.error || 'Activation blocked') + '\n\nThe sprint cannot start until the Access tab is green for every service this client has turned on.');
+      closeActivateModal();
+      switchMode('access');
+      return;
+    }
     alert(err.error || 'Activation failed');
     return;
   }
@@ -4978,6 +5074,89 @@ var SERVICE_COLS = [
 
 var STATUS_CYCLE   = ['none','pending','active','paused','cancelled'];
 var WEBSITE_CYCLE  = ['none','B','M','O'];
+
+// ── Tool links: tool_key on a template task → where Aaron goes to run it ──
+var TOOL_LINKS = {
+  'intake':         { label: '/intake',           href: 'https://sprint.engageengine.cc/#intake' },
+  'client-connect': { label: '/client-connect',   href: '' },
+  'vendasta':       { label: 'Partner Center',    href: 'https://partners.vendasta.com' },
+  'access':         { label: 'Access tab',        href: 'https://sprint.engageengine.cc/#access' },
+  'services':       { label: 'Services tab',      href: 'https://sprint.engageengine.cc/#services' },
+  'credentials':    { label: 'Credentials Index', href: '' },
+  'register':       { label: '/clients',          href: '' },
+  'gbp':            { label: 'GBP',               href: 'https://gbp-intelligence.robertlbutt.workers.dev' },
+  'dvs':            { label: 'DVS',               href: '' },
+  'dcd':            { label: '/demand-collapse-diagnostic', href: '' },
+  'ads-audit':      { label: '/ads-audit',        href: 'https://app.engageengine.ai/ads-audit' },
+  'ads-build':      { label: '/ads-build',        href: '' },
+  'seo_analysis':   { label: 'SEO baseline',      href: '' },
+  'page-analyzer':  { label: '/page-cro',         href: '' },
+  'tracking-audit': { label: '/tracking-audit',   href: '' },
+  'pixel-priority': { label: '/pixel-priority',   href: '' },
+  'portal':         { label: 'Portal token',      href: '' },
+  'adcheck':        { label: '/adcheck',          href: '' },
+  'full_report':    { label: '/full_report',      href: '' },
+  'contact_events': { label: '/contact_events',   href: '' },
+  'mpgstyle':       { label: '/mpgstyle verify',  href: '' },
+  'weekly_email':   { label: '/weekly-emails',    href: '' },
+  'vendasta-check': { label: '/vendasta-check',   href: '' },
+  'market-watch':   { label: '/market-watch',     href: '' }
+};
+function toolChip(key) {
+  if (!key) return '';
+  var t = TOOL_LINKS[key] || { label: key, href: '' };
+  var title = 'Runbook: _Internal/Setup/CLIENT-ONBOARDING-RUNBOOK.md \u2192 ' + t.label;
+  if (t.href) return '<a class="task-tool" href="' + t.href + '" target="_blank" rel="noopener" title="' + esc(title) + '" onclick="event.stopPropagation()">' + esc(t.label) + ' \u2197</a>';
+  return '<span class="task-tool" title="' + esc(title) + '">' + esc(t.label) + '</span>';
+}
+
+// ── Client Access Board ──
+var accessData = null;
+var ACCESS_COLS = ['gads','ga4','gbp','meta','clarity','audiencelab','pixel','crm','weekly_email'];
+async function loadAccessBoard() {
+  document.getElementById('accessContent').innerHTML = '<div class="loading">Loading...</div>';
+  var res = await fetch(API + '/api/access');
+  if (res.status === 401) { showLoginScreen(); return; }
+  accessData = await res.json();
+  renderAccessBoard();
+}
+function renderAccessBoard() {
+  if (!accessData) return;
+  var rows = accessData.clients.slice();
+  // red first, then not-ready-with-nothing-wanted, then green
+  rows.sort(function(a,b){ var ka = a.missing.length ? 0 : (a.wanted_count ? 2 : 1); var kb = b.missing.length ? 0 : (b.wanted_count ? 2 : 1); return ka - kb || a.name.localeCompare(b.name); });
+  var blocked = rows.filter(function(r){ return r.missing.length; }).length;
+  var html = '<div class="services-wrap">';
+  html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">';
+  html += '<div class="section-title" style="margin-bottom:0">Client Access \u2014 ' + blocked + ' of ' + rows.length + ' clients blocked</div>';
+  html += '<span style="font-size:11px;color:var(--text-muted)">live from D1 \u00b7 ' + esc((accessData.generated_at||'').replace('T',' ').slice(0,16)) + '</span></div>';
+  html += '<div class="ch-sub">A service turned on in Services says we want the platform. A pinned account id says we can read it. Red = wanted but not pinned \u2014 every report for that platform will say MISSING until it is fixed. The 30-Day Sprint will not start for a red client.</div>';
+  html += '<div class="services-legend">';
+  html += '<span><span class="svc-badge acc-ok" style="width:16px;height:16px;font-size:9px">\u2713</span> Pinned</span>';
+  html += '<span><span class="svc-badge acc-missing" style="width:16px;height:16px;font-size:9px">!</span> Wanted, not pinned</span>';
+  html += '<span><span class="svc-none" style="font-size:14px">\u2014</span> Not wanted</span>';
+  html += '<span style="color:var(--text-muted);font-size:11px">Hover a red cell for how to fix it</span></div>';
+  html += '<div class="services-table-wrap"><table class="services-table"><thead><tr><th class="svc-client-col">Client</th><th>Sprint-ready</th>';
+  ACCESS_COLS.forEach(function(k){ var any = rows.find(function(r){ return r.platforms[k]; }); html += '<th>' + esc(any ? any.platforms[k].label : k) + '</th>'; });
+  html += '</tr></thead><tbody>';
+  rows.forEach(function(r) {
+    html += '<tr><td class="svc-client-name">' + esc(r.name) + (r.has_sprint ? ' <span style="font-size:10px;color:var(--accent)" title="In the 30-Day Sprint">\u25cf</span>' : '') + '</td>';
+    var rc = r.missing.length ? 'no' : (r.wanted_count ? 'yes' : 'na');
+    var rt = r.missing.length ? 'Blocked: ' + r.missing.join(', ') : (r.wanted_count ? 'Ready' : 'No services on');
+    html += '<td><span class="acc-ready ' + rc + '">' + esc(rt) + '</span></td>';
+    ACCESS_COLS.forEach(function(k) {
+      var p = r.platforms[k];
+      if (!p || !p.wanted) { html += '<td><span class="svc-none">\u2014</span></td>'; return; }
+      if (p.pinned) html += '<td><span class="svc-badge acc-ok" title="' + esc(p.id) + '">\u2713</span><span class="acc-id">' + esc(p.id) + '</span></td>';
+      else html += '<td><span class="svc-badge acc-missing" title="' + esc(p.label + ' is ' + p.status + ' but no account id is pinned. Fix: ' + p.how) + '">!</span></td>';
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+  html += '<div class="acc-how"><b>How a red cell turns green:</b> run <code>/client-connect "Client Name"</code> in Claude Code (it reads the agency inventories and pins HIGH-confidence matches), or paste the id into D1 by hand for Clarity and Vendasta. Full steps: Dropbox \u2192 EngageEngine \u2192 _Internal \u2192 Setup \u2192 CLIENT-ONBOARDING-RUNBOOK.md, Phase 0.</div>';
+  html += '</div>';
+  document.getElementById('accessContent').innerHTML = html;
+}
 
 // ── Client Health ──
 var clientHealthData = null;

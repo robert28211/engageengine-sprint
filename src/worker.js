@@ -4982,7 +4982,7 @@ async function activateSprintClient() {
   if (!res.ok) {
     var err = await res.json();
     if (err.gate) {
-      alert((err.error || 'Activation blocked') + '\n\nThe sprint cannot start until the Access tab is green for every service this client has turned on.');
+      alert((err.error || 'Activation blocked') + '\\n\\nThe sprint cannot start until the Access tab is green for every service this client has turned on.');
       closeActivateModal();
       switchMode('access');
       return;

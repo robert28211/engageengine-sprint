@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 import os
+# NOTE 2026-10-17: P0/P1/P2 gained 23 tasks and P4 · Offboarding was added by
+# db/2026-10-17_runbook_v2_templates.sql (applied to D1 that day). That file is a
+# DELTA with letter-suffixed ids so existing sprint_tasks joins survive. If you
+# regenerate from this file you will LOSE those rows — apply the delta again after.
 # Generates the EngageEngine client-operating-routine seed for the Sprint Tracker.
 # Emits idempotent SQL: clears prior routine rows (id prefix 'rt-') then re-inserts.
 

@@ -395,6 +395,11 @@ async function handleLogDelete(request, env, logId) {
   return json({ ok: true });
 }
 __name(handleLogDelete, "handleLogDelete");
+// 2026-10-19 kill-switch: every shared key may have an _AARON twin. Robbie's key and
+// Aaron's key are both valid; deleting the _AARON secret revokes Aaron alone.
+function keyOk(given, primary, aaron) {
+  return !!given && ((!!primary && given === primary) || (!!aaron && given === aaron));
+}
 async function handleTemplatesList(request, env) {
   const templates = await env.DB.prepare(`SELECT * FROM sprint_templates ORDER BY sort_order, name`).all();
   const taskRows = await env.DB.prepare(`SELECT * FROM sprint_template_tasks ORDER BY sort_order`).all();
@@ -1663,7 +1668,7 @@ var worker_default = {
             continue;
           if (!route.public) {
             const authed2 = await authMiddleware(request, env);
-            const readOk = route.readKey && request.method === "GET" && env.SERVICES_READ_KEY && request.headers.get("x-read-key") === env.SERVICES_READ_KEY;
+            const readOk = route.readKey && request.method === "GET" && keyOk(request.headers.get("x-read-key"), env.SERVICES_READ_KEY, env.SERVICES_READ_KEY_AARON);
             if (!authed2 && !readOk)
               return json({ error: "Unauthorized" }, 401);
           }

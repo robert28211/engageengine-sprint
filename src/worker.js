@@ -81,6 +81,8 @@ var ROUTES = [
   { method: "DELETE", re: /^\/api\/tasks\/([^/]+)$/, handler: (r, e, m) => handleTaskDelete(r, e, m[1]) },
   { method: "POST", re: /^\/api\/tasks\/([^/]+)\/complete$/, handler: (r, e, m) => handleTaskStatus(r, e, m[1], "Complete") },
   { method: "POST", re: /^\/api\/tasks\/([^/]+)\/reopen$/, handler: (r, e, m) => handleTaskStatus(r, e, m[1], "Not Started") },
+  { method: "POST", re: /^\/api\/tasks\/([^/]+)\/block$/, handler: (r, e, m) => handleTaskBlock(r, e, m[1]) },
+  { method: "POST", re: /^\/api\/tasks\/([^/]+)\/unblock$/, handler: (r, e, m) => handleTaskUnblock(r, e, m[1]) },
   { method: "GET", re: /^\/api\/sprint\/([^/]+)$/, handler: (r, e, m) => handleSprintGet(r, e, m[1]) },
   { method: "POST", re: /^\/api\/sprint\/toggle$/, handler: handleSprintToggle },
   { method: "POST", re: /^\/api\/sprint\/activate$/, handler: handleSprintActivate },
@@ -156,8 +158,10 @@ __name(handleLogin, "handleLogin");
 // scheduled for later is stuck. It gets a forced choice (do today / shrink /
 // kill) instead of rotting quietly. Any edit resets updated_at, so re-dating
 // or rewording counts as a decision. Routine cadence tasks are excluded: the
-// reaper owns those. Expects sprint_tasks aliased as t.
+// reaper owns those. Blocked tasks are excluded: they are waiting on someone
+// named, not rotting. Expects sprint_tasks aliased as t.
 const STALE_TASK_SQL = `t.status='Not Started'
+  AND COALESCE(t.blocked_by,'') = ''
   AND date(t.updated_at) <= date('now','-14 days')
   AND (t.due_date IS NULL OR t.due_date = '' OR t.due_date <= date('now'))
   AND NOT EXISTS (SELECT 1 FROM routine_generation rg WHERE rg.job_id = t.job_id)`;
@@ -209,6 +213,10 @@ async function handleDashboard(request, env) {
       `SELECT COUNT(*) as n FROM sprint_tasks t JOIN sprint_clients c ON c.id = t.client_id WHERE c.archived = 0 AND ${STALE_TASK_SQL}`
     ).first();
     briefing.stale = st?.n || 0;
+    const bl = await env.DB.prepare(
+      `SELECT COUNT(*) as n FROM sprint_tasks t JOIN sprint_clients c ON c.id = t.client_id WHERE c.archived = 0 AND t.status='Not Started' AND COALESCE(t.blocked_by,'') != ''`
+    ).first();
+    briefing.blocked = bl?.n || 0;
   }
   let intake_pending = 0;
   try {
@@ -239,6 +247,7 @@ async function handleAllWork(request, env) {
     SELECT t.id, t.notes as name, t.status, t.due_date, t.assigned_to,
       CASE WHEN ${STALE_TASK_SQL}
         THEN CAST(julianday(date('now')) - julianday(date(t.updated_at)) AS INTEGER) ELSE 0 END as stale_days,
+      COALESCE(t.blocked_by,'') as blocked_by, COALESCE(t.blocked_reason,'') as blocked_reason, COALESCE(t.blocked_at,'') as blocked_at,
       j.id as job_id, j.name as job_name,
       c.id as client_id, c.name as client_name
     FROM sprint_tasks t
@@ -490,7 +499,7 @@ async function handleTaskStatus(request, env, taskId, status) {
   const now = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
   if (status === "Complete") {
     await env.DB.prepare(
-      `UPDATE sprint_tasks SET status='Complete', completed_date=?, updated_at=date('now') WHERE id=?`
+      `UPDATE sprint_tasks SET status='Complete', completed_date=?, blocked_by='', blocked_reason='', blocked_at='', updated_at=date('now') WHERE id=?`
     ).bind(now, taskId).run();
   } else {
     await env.DB.prepare(
@@ -500,6 +509,27 @@ async function handleTaskStatus(request, env, taskId, status) {
   return json({ success: true });
 }
 __name(handleTaskStatus, "handleTaskStatus");
+async function handleTaskBlock(request, env, taskId) {
+  const body = await request.json().catch(() => ({}));
+  const by = String(body.blocked_by || "").trim().slice(0, 80);
+  const reason = String(body.reason || "").trim().slice(0, 300);
+  if (!by)
+    return json({ error: "blocked_by required (who or what it waits on)" }, 400);
+  const r = await env.DB.prepare(
+    `UPDATE sprint_tasks SET blocked_by=?, blocked_reason=?, blocked_at=CASE WHEN COALESCE(blocked_at,'')='' THEN date('now') ELSE blocked_at END, updated_at=date('now') WHERE id=? AND status!='Complete'`
+  ).bind(by, reason, taskId).run();
+  if (!r.meta?.changes)
+    return json({ error: "Task not found or already complete" }, 404);
+  return json({ success: true });
+}
+__name(handleTaskBlock, "handleTaskBlock");
+async function handleTaskUnblock(request, env, taskId) {
+  await env.DB.prepare(
+    `UPDATE sprint_tasks SET blocked_by='', blocked_reason='', blocked_at='', updated_at=date('now') WHERE id=?`
+  ).bind(taskId).run();
+  return json({ success: true });
+}
+__name(handleTaskUnblock, "handleTaskUnblock");
 async function handleSprintGet(request, env, clientId) {
   const items = await env.DB.prepare(
     `SELECT * FROM sprint_checklist WHERE client_id=?`
@@ -2430,6 +2460,12 @@ body{padding-bottom:80px}
 .decide-btn{font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text);cursor:pointer}
 .decide-btn:hover{border-color:var(--accent);color:var(--accent)}
 .decide-btn.kill:hover{border-color:var(--red);color:var(--red);background:var(--red-bg)}
+.task-blocked{display:inline-block;font-size:11px;padding:2px 8px;border-radius:4px;background:var(--red-bg);color:var(--red);font-weight:600;white-space:nowrap;max-width:320px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
+.task-blocked .unblock-x{margin-left:6px;cursor:pointer;opacity:.7}
+.task-blocked .unblock-x:hover{opacity:1}
+.block-edit-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 16px;background:var(--surface2)}
+.block-edit-row input{font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text)}
+.briefing-blocked{margin-left:8px;font-weight:600;color:var(--red);cursor:pointer;text-decoration:underline}
 .briefing-stale{margin-left:8px;font-weight:600;color:var(--amber);cursor:pointer;text-decoration:underline}
 .allwork-assignee{font-size:12px;color:var(--text-dim)}
 .allwork-editable-cell{cursor:pointer}
@@ -2798,6 +2834,11 @@ document.addEventListener('click', function(e) {
   else if (act === 'stale-shrink') { staleShrink(id); }
   else if (act === 'stale-kill') { staleKill(id); }
   else if (act === 'goto-stale') { allWorkTab = 'stale'; switchMode('allwork'); }
+  else if (act === 'goto-blocked') { allWorkTab = 'blocked'; switchMode('allwork'); }
+  else if (act === 'task-block') { openBlockEdit(id, val); }
+  else if (act === 'task-block-save') { saveBlock(id); }
+  else if (act === 'task-block-cancel') { var be = document.getElementById('block-edit-' + id); if (be) be.remove(); }
+  else if (act === 'task-unblock') { unblockTask(id); }
   else if (act === 'allwork-job-edit') { openAllWorkJobEdit(el); }
   else if (act === 'allwork-job-save') { saveAllWorkJobEdit(id); }
   else if (act === 'allwork-job-cancel') { renderAllWork(); }
@@ -3113,6 +3154,10 @@ function renderAllWork() {
   if (staleTasks.length || allWorkTab === 'stale') {
     html += '<button class="allwork-subtab' + (allWorkTab === 'stale' ? ' active' : '') + '" data-action="allwork-tab" data-val="stale">Decide (' + staleTasks.length + ')</button>';
   }
+  var blockedTasks = d.tasks.filter(function(t) { return !!t.blocked_by; });
+  if (blockedTasks.length || allWorkTab === 'blocked') {
+    html += '<button class="allwork-subtab' + (allWorkTab === 'blocked' ? ' active' : '') + '" data-action="allwork-tab" data-val="blocked">Blocked (' + blockedTasks.length + ')</button>';
+  }
   html += '</div>';
 
   if (allWorkTab === 'jobs') {
@@ -3167,6 +3212,28 @@ function renderAllWork() {
       }
       html += '</tbody></table>';
     }
+  } else if (allWorkTab === 'blocked') {
+    if (!blockedTasks.length) {
+      html += '<div class="allwork-empty">Nothing blocked. No open task is waiting on anyone.</div>';
+    } else {
+      blockedTasks = blockedTasks.slice().sort(function(a, b) { return blockedDays(b) - blockedDays(a); });
+      html += '<div class="allwork-stale-note">Open tasks waiting on someone. Chase the oldest first, or unblock once it lands.</div>';
+      html += '<table class="allwork-table"><thead><tr>';
+      html += '<th>Client</th><th>Task</th><th>Waiting on</th><th>Days</th><th>Assigned</th><th></th>';
+      html += '</tr></thead><tbody>';
+      for (var b = 0; b < blockedTasks.length; b++) {
+        var bt = blockedTasks[b];
+        html += '<tr>';
+        html += '<td><a class="allwork-client-link" data-action="allwork-goto-client" data-id="' + esc(bt.client_id) + '">' + esc(bt.client_name) + '</a></td>';
+        html += '<td>' + esc(bt.name) + '</td>';
+        html += '<td><strong>' + esc(bt.blocked_by) + '</strong>' + (bt.blocked_reason ? ' · ' + esc(bt.blocked_reason) : '') + '</td>';
+        html += '<td><span class="allwork-stale">' + blockedDays(bt) + 'd</span></td>';
+        html += '<td><span class="allwork-assignee">' + esc(bt.assigned_to || '—') + '</span></td>';
+        html += '<td><button class="decide-btn" data-action="task-unblock" data-id="' + bt.id + '">Unblock</button></td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+    }
   } else {
     if (!d.tasks.length) {
       html += '<div class="allwork-empty">No open tasks \u2014 all caught up!</div>';
@@ -3182,10 +3249,10 @@ function renderAllWork() {
           if (due < today) { dueClass = 'overdue'; dueLabel = '\u26A0 ' + formatDate(t.due_date); }
           else if (due <= soon) { dueClass = 'soon'; }
         }
-        html += '<tr>';
+        html += '<tr id="allwork-task-row-' + t.id + '">';
         html += '<td><a class="allwork-client-link" data-action="allwork-goto-client" data-id="' + esc(t.client_id) + '">' + esc(t.client_name) + '</a></td>';
         html += '<td>' + esc(t.job_name) + '</td>';
-        html += '<td>' + esc(t.name) + (t.stale_days > 0 ? ' <span class="allwork-stale" data-action="allwork-tab" data-val="stale" title="Untouched ' + t.stale_days + ' days. Decide or kill.">' + t.stale_days + 'd</span>' : '') + '</td>';
+        html += '<td>' + esc(t.name) + (t.stale_days > 0 ? ' <span class="allwork-stale" data-action="allwork-tab" data-val="stale" title="Untouched ' + t.stale_days + ' days. Decide or kill.">' + t.stale_days + 'd</span>' : '') + ' ' + blockedChip(t) + blockBtn(t, 'allwork-task-row-' + t.id) + '</td>';
         html += '<td><span class="allwork-assignee">' + esc(t.assigned_to || '\u2014') + '</span></td>';
         html += '<td><span class="allwork-due ' + dueClass + '">' + esc(dueLabel) + '</span></td>';
         html += '</tr>';
@@ -3305,12 +3372,13 @@ function renderDashboard() {
   var clients = d.clients, stats = d.stats, team = d.team, briefing = d.briefing;
   // Briefing banner
   var bb = document.getElementById('briefingBanner');
-  if (briefing && (briefing.overdue > 0 || briefing.due_today > 0 || briefing.stale > 0)) {
+  if (briefing && (briefing.overdue > 0 || briefing.due_today > 0 || briefing.stale > 0 || briefing.blocked > 0)) {
     var parts = [];
     if (briefing.overdue > 0) parts.push('<strong>' + briefing.overdue + ' overdue</strong>');
     if (briefing.due_today > 0) parts.push('<strong>' + briefing.due_today + ' due today</strong>');
     var staleLink = briefing.stale > 0 ? ' <a class="briefing-stale" data-action="goto-stale">' + briefing.stale + ' stuck 14+ days \u2014 decide or kill</a>' : '';
-    bb.innerHTML = '<div class="briefing-banner"><span>&#9888; ' + (parts.length ? parts.join(', ') + ' \u2014 check client cards below' : '') + staleLink + '</span><button class="briefing-dismiss" data-action="dismiss-briefing" title="Dismiss">&times;</button></div>';
+    var blockedLink = briefing.blocked > 0 ? ' <a class="briefing-blocked" data-action="goto-blocked">' + briefing.blocked + ' blocked \u2014 waiting on someone</a>' : '';
+    bb.innerHTML = '<div class="briefing-banner"><span>&#9888; ' + (parts.length ? parts.join(', ') + ' \u2014 check client cards below' : '') + staleLink + blockedLink + '</span><button class="briefing-dismiss" data-action="dismiss-briefing" title="Dismiss">&times;</button></div>';
   } else if (briefing) {
     bb.innerHTML = '<div class="briefing-clear"><span>&#10003; All clear \u2014 no overdue or due-today tasks</span><button class="briefing-dismiss" data-action="dismiss-briefing" title="Dismiss">&times;</button></div>';
   }
@@ -3491,6 +3559,7 @@ function renderTaskItem(t, today) {
   html += '<div class="task-notes' + (isDone ? ' completed' : '') + '">' + esc(t.notes || 'Untitled task') + toolChip(t.tool_key) + '</div>';
   if (t.assigned_to) html += '<span class="task-assignee">' + esc(t.assigned_to) + '</span>';
   if (t.due_date) html += '<span class="task-due ' + dueClass + '">' + formatDate(t.due_date) + '</span>';
+  if (!isDone) html += blockedChip(t) + blockBtn(t, 'task-row-' + t.id);
   if (!isDone) {
     html += '<button class="task-edit-btn" data-action="task-edit" data-id="' + t.id + '" title="Edit">&#9998;</button>';
     html += '<button class="task-delete-btn" data-action="task-delete" data-id="' + t.id + '" data-val="' + (t.job_id || '') + '" title="Delete">&times;</button>';
@@ -3611,6 +3680,76 @@ async function saveTaskEdit(taskId) {
     body: JSON.stringify({ notes: notes.value.trim(), assigned_to: assign ? assign.value : '', due_date: due ? due.value : '' })
   });
   if (currentClientId) loadClient(currentClientId);
+}
+
+// ── Blocked by: who/what a task is waiting on ──
+function blockedChip(t) {
+  if (!t.blocked_by) return '';
+  var tip = 'Waiting on ' + t.blocked_by + (t.blocked_reason ? ': ' + t.blocked_reason : '') + (t.blocked_at ? ' (since ' + formatDate(t.blocked_at) + ')' : '');
+  return '<span class="task-blocked" title="' + esc(tip) + '">&#9208; ' + esc(t.blocked_by) + (t.blocked_reason ? ' · ' + esc(t.blocked_reason) : '') +
+    '<span class="unblock-x" data-action="task-unblock" data-id="' + t.id + '" title="Unblock">&times;</span></span>';
+}
+
+function blockBtn(t, rowId) {
+  if (t.blocked_by) return '';
+  return '<button class="task-edit-btn" data-action="task-block" data-id="' + t.id + '" data-val="' + rowId + '" title="Mark blocked (waiting on someone)">&#9208;</button>';
+}
+
+function blockedDays(t) {
+  if (!t.blocked_at) return 0;
+  var today = new Date(); today.setHours(0,0,0,0);
+  return Math.max(0, Math.round((today - new Date(t.blocked_at + 'T00:00:00')) / 86400000));
+}
+
+function openBlockEdit(taskId, rowId) {
+  if (document.getElementById('block-edit-' + taskId)) return;
+  var row = document.getElementById(rowId);
+  if (!row) return;
+  var opts = '<option>Client</option>';
+  for (var i = 0; i < teamMembers.length; i++) opts += '<option>' + esc(teamMembers[i].name) + '</option>';
+  var inner = '<input id="blockWho-' + taskId + '" list="blockWhoList-' + taskId + '" placeholder="Waiting on who? (Client, Aaron...)" style="width:210px">' +
+    '<datalist id="blockWhoList-' + taskId + '">' + opts + '</datalist>' +
+    '<input id="blockWhy-' + taskId + '" placeholder="On what? (e.g. GA4 access, photos)" style="flex:1;min-width:180px">' +
+    '<button class="save-btn" data-action="task-block-save" data-id="' + taskId + '">Block</button>' +
+    '<button class="cancel-edit-btn" data-action="task-block-cancel" data-id="' + taskId + '">Cancel</button>';
+  var html = row.tagName === 'TR'
+    ? '<tr id="block-edit-' + taskId + '"><td colspan="' + row.children.length + '" style="padding:0"><div class="block-edit-row">' + inner + '</div></td></tr>'
+    : '<div class="block-edit-row" id="block-edit-' + taskId + '">' + inner + '</div>';
+  row.insertAdjacentHTML('afterend', html);
+  var who = document.getElementById('blockWho-' + taskId);
+  var why = document.getElementById('blockWhy-' + taskId);
+  if (who) who.focus();
+  [who, why].forEach(function(inp) {
+    if (inp) inp.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); saveBlock(taskId); }
+      if (e.key === 'Escape') { var be = document.getElementById('block-edit-' + taskId); if (be) be.remove(); }
+    });
+  });
+}
+
+async function saveBlock(taskId) {
+  var who = document.getElementById('blockWho-' + taskId);
+  var why = document.getElementById('blockWhy-' + taskId);
+  if (!who || !who.value.trim()) { if (who) who.focus(); return; }
+  var res = await fetch(API + '/api/tasks/' + taskId + '/block', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ blocked_by: who.value.trim(), reason: why ? why.value.trim() : '' })
+  });
+  if (!res.ok) { alert('Block failed — please try again'); return; }
+  await refreshAfterBlock();
+}
+
+async function unblockTask(taskId) {
+  var res = await fetch(API + '/api/tasks/' + taskId + '/unblock', { method: 'POST' });
+  if (!res.ok) { alert('Unblock failed — please try again'); return; }
+  await refreshAfterBlock();
+}
+
+async function refreshAfterBlock() {
+  if (currentMode === 'allwork') await loadAllWork();
+  else if (currentClientId) await loadClient(currentClientId);
+  else if (currentTeamName) await loadTeam(encodeURIComponent(currentTeamName));
 }
 
 function cancelTaskEdit(taskId) {
@@ -3943,6 +4082,7 @@ function renderTeamDetail(data) {
       html += '<div class="task-notes">' + esc(t.notes || 'Untitled') + '</div>';
       html += '<span class="task-assignee">' + esc(t.job_name || '') + '</span>';
       if (t.due_date) html += '<span class="task-due ' + dueClass + '">' + formatDate(t.due_date) + '</span>';
+      html += blockedChip(t) + blockBtn(t, 'task-row-' + t.id);
       html += '</div>';
     }
     html += '</div>';

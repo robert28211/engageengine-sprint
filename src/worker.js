@@ -2231,8 +2231,8 @@ body{font-family:"DM Sans",sans-serif;background:var(--bg);color:var(--text);min
 .task-edit-row input,.task-edit-row select{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-family:"DM Sans",sans-serif;font-size:13px;outline:none}
 .task-edit-row input:focus,.task-edit-row select:focus{border-color:var(--accent)}
 .task-edit-notes{flex:1;min-width:180px}
-.task-edit-row .save-btn{background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-family:"DM Sans",sans-serif;font-weight:600;font-size:13px}
-.task-edit-row .cancel-edit-btn{background:none;border:1px solid var(--border);color:var(--text-dim);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px}
+.task-edit-row .save-btn,.block-edit-row .save-btn{background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-family:"DM Sans",sans-serif;font-weight:600;font-size:13px}
+.task-edit-row .cancel-edit-btn,.block-edit-row .cancel-edit-btn{background:none;border:1px solid var(--border);color:var(--text-dim);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px}
 /* \u2500\u2500 Add forms \u2500\u2500 */
 .add-btn{background:none;border:1px dashed var(--border);color:var(--text-dim);padding:8px 16px;border-radius:8px;cursor:pointer;font-size:13px;font-family:"DM Sans",sans-serif;transition:all 0.15s;margin-top:8px}
 .add-btn:hover{border-color:var(--accent);color:var(--accent)}

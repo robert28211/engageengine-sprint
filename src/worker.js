@@ -2477,8 +2477,12 @@ body{padding-bottom:80px}
 .allwork-count-label{font-size:12px;color:var(--text-dim);margin-top:2px}
 .allwork-count-item{text-align:center}
 .allwork-empty{color:var(--text-dim);padding:40px 0;text-align:center;font-size:14px}
+.aw-check{width:15px;height:15px;cursor:pointer;accent-color:var(--accent)}
+.aw-bulk-bar{display:flex;align-items:center;gap:10px;padding:8px 12px;margin-bottom:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;position:sticky;top:0;z-index:5}
+.aw-bulk-bar.hidden{display:none}
+.aw-bulk-count{font-size:13px;font-weight:600;margin-right:auto}
 @media(max-width:768px){
-  .allwork-table th:nth-child(n+4),.allwork-table td:nth-child(n+4){display:none}
+  .allwork-table th:nth-child(n+5),.allwork-table td:nth-child(n+5){display:none}
 }
 /* ── Services table ── */
 .services-wrap{overflow:hidden}
@@ -2830,6 +2834,10 @@ document.addEventListener('click', function(e) {
   else if (act === 'allwork-tab') { switchAllWorkTab(val); }
   else if (act === 'allwork-goto-client') { switchMode('jobs'); loadClient(id); }
   else if (act === 'allwork-job-complete') { completeAllWorkJob(id); }
+  else if (act === 'aw-sel') { awToggleOne(el); }
+  else if (act === 'aw-sel-all') { awToggleAll(el); }
+  else if (act === 'aw-bulk-complete') { awBulkComplete(val, el); }
+  else if (act === 'aw-bulk-clear') { awSelected = {}; renderAllWork(); }
   else if (act === 'stale-today') { staleDoToday(id); }
   else if (act === 'stale-shrink') { staleShrink(id); }
   else if (act === 'stale-kill') { staleKill(id); }
@@ -3115,6 +3123,7 @@ async function toggleRoutineTask(taskId, checked) {
 
 var allWorkData = null;
 var allWorkTab = 'jobs';
+var awSelected = {};
 
 async function loadAllWork() {
   document.getElementById('allworkContent').innerHTML = '<div class="loading">Loading...</div>';
@@ -3130,6 +3139,7 @@ async function loadAllWork() {
 
 function switchAllWorkTab(tab) {
   allWorkTab = tab;
+  awSelected = {};
   renderAllWork();
 }
 
@@ -3164,7 +3174,9 @@ function renderAllWork() {
     if (!d.jobs.length) {
       html += '<div class="allwork-empty">No active jobs across any client.</div>';
     } else {
+      html += awBulkBar('job');
       html += '<table class="allwork-table"><thead><tr>';
+      html += '<th style="width:28px"><input type="checkbox" class="aw-check" data-action="aw-sel-all" data-val="job" title="Select all"></th>';
       html += '<th>Client</th><th>Job</th><th>Open/Total</th><th>Assigned</th><th>Due</th><th></th>';
       html += '</tr></thead><tbody>';
       for (var i = 0; i < d.jobs.length; i++) {
@@ -3176,6 +3188,7 @@ function renderAllWork() {
           else if (jDue <= soon) { jDueClass = 'soon'; }
         }
         html += '<tr id="allwork-job-row-' + j.id + '">';
+        html += '<td><input type="checkbox" class="aw-check" data-action="aw-sel" data-val="job" data-id="' + j.id + '"' + (awSelected['job:' + j.id] ? ' checked' : '') + '></td>';
         html += '<td><a class="allwork-client-link" data-action="allwork-goto-client" data-id="' + esc(j.client_id) + '">' + esc(j.client_name) + '</a></td>';
         html += '<td>' + esc(j.name) + '</td>';
         html += '<td><span class="allwork-progress-text">' + j.open_tasks + ' / ' + j.total_tasks + '</span></td>';
@@ -3238,7 +3251,9 @@ function renderAllWork() {
     if (!d.tasks.length) {
       html += '<div class="allwork-empty">No open tasks \u2014 all caught up!</div>';
     } else {
+      html += awBulkBar('task');
       html += '<table class="allwork-table"><thead><tr>';
+      html += '<th style="width:28px"><input type="checkbox" class="aw-check" data-action="aw-sel-all" data-val="task" title="Select all"></th>';
       html += '<th>Client</th><th>Job</th><th>Task</th><th>Assignee</th><th>Due</th>';
       html += '</tr></thead><tbody>';
       for (var k = 0; k < d.tasks.length; k++) {
@@ -3250,6 +3265,7 @@ function renderAllWork() {
           else if (due <= soon) { dueClass = 'soon'; }
         }
         html += '<tr id="allwork-task-row-' + t.id + '">';
+        html += '<td><input type="checkbox" class="aw-check" data-action="aw-sel" data-val="task" data-id="' + t.id + '"' + (awSelected['task:' + t.id] ? ' checked' : '') + '></td>';
         html += '<td><a class="allwork-client-link" data-action="allwork-goto-client" data-id="' + esc(t.client_id) + '">' + esc(t.client_name) + '</a></td>';
         html += '<td>' + esc(t.job_name) + '</td>';
         html += '<td>' + esc(t.name) + (t.stale_days > 0 ? ' <span class="allwork-stale" data-action="allwork-tab" data-val="stale" title="Untouched ' + t.stale_days + ' days. Decide or kill.">' + t.stale_days + 'd</span>' : '') + ' ' + blockedChip(t) + blockBtn(t, 'allwork-task-row-' + t.id) + '</td>';
@@ -3336,6 +3352,75 @@ async function staleKill(taskId) {
   if (!confirm('Kill this task? It is deleted, not completed.\\n\\n' + (t.client_name || '') + ': ' + (t.name || ''))) return;
   var res = await fetch(API + '/api/tasks/' + taskId, { method: 'DELETE' });
   if (!res.ok) { alert('Delete failed — please try again'); return; }
+  await loadAllWork();
+}
+
+function awSelectedIds(kind) {
+  var out = [];
+  for (var key in awSelected) {
+    if (awSelected[key] && key.indexOf(kind + ':') === 0) out.push(key.slice(kind.length + 1));
+  }
+  return out;
+}
+
+function awBulkBar(kind) {
+  var n = awSelectedIds(kind).length;
+  var label = kind === 'job' ? 'job' : 'task';
+  return '<div class="aw-bulk-bar' + (n ? '' : ' hidden') + '" id="awBulkBar">' +
+    '<span class="aw-bulk-count" id="awBulkCount">' + n + ' ' + label + (n === 1 ? '' : 's') + ' selected</span>' +
+    '<button class="job-complete-btn" data-action="aw-bulk-complete" data-val="' + kind + '">Mark complete</button>' +
+    '<button class="cancel-edit-btn" data-action="aw-bulk-clear">Clear</button>' +
+    '</div>';
+}
+
+function awRefreshBulkBar(kind) {
+  var bar = document.getElementById('awBulkBar');
+  if (!bar) return;
+  var n = awSelectedIds(kind).length;
+  bar.classList.toggle('hidden', n === 0);
+  document.getElementById('awBulkCount').textContent = n + ' ' + kind + (n === 1 ? '' : 's') + ' selected';
+  var boxes = document.querySelectorAll('.aw-check[data-action="aw-sel"][data-val="' + kind + '"]');
+  var all = document.querySelector('.aw-check[data-action="aw-sel-all"][data-val="' + kind + '"]');
+  if (all) {
+    all.checked = boxes.length > 0 && n === boxes.length;
+    all.indeterminate = n > 0 && n < boxes.length;
+  }
+}
+
+function awToggleOne(el) {
+  var kind = el.getAttribute('data-val');
+  awSelected[kind + ':' + el.getAttribute('data-id')] = el.checked;
+  awRefreshBulkBar(kind);
+}
+
+function awToggleAll(el) {
+  var kind = el.getAttribute('data-val');
+  var boxes = document.querySelectorAll('.aw-check[data-action="aw-sel"][data-val="' + kind + '"]');
+  for (var i = 0; i < boxes.length; i++) {
+    boxes[i].checked = el.checked;
+    awSelected[kind + ':' + boxes[i].getAttribute('data-id')] = el.checked;
+  }
+  awRefreshBulkBar(kind);
+}
+
+async function awBulkComplete(kind, btn) {
+  var ids = awSelectedIds(kind);
+  if (!ids.length) return;
+  if (!confirm('Mark ' + ids.length + ' ' + kind + (ids.length === 1 ? '' : 's') + ' complete?')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Completing...'; }
+  var base = kind === 'job' ? '/api/jobs/' : '/api/tasks/';
+  var failed = 0;
+  for (var i = 0; i < ids.length; i += 5) {
+    var chunk = ids.slice(i, i + 5);
+    var results = await Promise.all(chunk.map(function(id) {
+      return fetch(API + base + id + '/complete', { method: 'POST' })
+        .then(function(r) { return r.ok; })
+        .catch(function() { return false; });
+    }));
+    for (var r = 0; r < results.length; r++) { if (!results[r]) failed++; }
+  }
+  awSelected = {};
+  if (failed) alert(failed + ' of ' + ids.length + ' did not save. They are still open, try those again.');
   await loadAllWork();
 }
 

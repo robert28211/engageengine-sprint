@@ -1931,20 +1931,39 @@ async function handleClientHealth(request, env) {
     `SELECT client_id, client_name, composite_score, trend, signals_json, flags_json
      FROM client_health_scores WHERE score_date=? ORDER BY composite_score ASC`
   ).bind(latest.d).all();
-  const clients = rows.results.map((r) => {
+  // 2026-11-10: the list comes from the roster (same clients as the Services page),
+  // not from whoever the scoring job happened to score. The scorer still scores
+  // former clients (Guttermen, Brabham, Icehouse...) and skips some current ones.
+  // Scores are matched by the client's legacy key or a normalized name.
+  const roster = (await env.DB.prepare(
+    `SELECT c.id, c.name, p.legacy_key FROM sprint_clients c
+     LEFT JOIN client_platform_ids p ON p.client_id = c.id
+     WHERE c.archived = 0 ORDER BY c.name`
+  ).all()).results || [];
+  const norm = (x) => String(x || "").toLowerCase().replace(/\bmt\b\.?/g, "mount").replace(/^the /, "").replace(/[^a-z0-9]/g, "");
+  const scored = rows.results.map((r) => ({ r, k: norm(r.client_id), n: norm(r.client_name) }));
+  const used = new Set();
+  const clients = roster.map((c) => {
+    const keys = [norm(c.legacy_key), norm(c.name)].filter(Boolean);
+    let hit = scored.find((x) => !used.has(x) && keys.some((k) => k === x.k || k === x.n));
+    if (!hit) hit = scored.find((x) => !used.has(x) && keys.some((k) => k.length > 5 && x.n.length > 5 && (k.startsWith(x.n) || x.n.startsWith(k))));
+    if (!hit) return { client_id: c.id, client_name: c.name, composite_score: null, trend: null, signals: {}, flags: ["not scored by the health pipeline"], not_scored: true };
+    used.add(hit);
+    const r = hit.r;
     let signals = {}, flags = [];
     try { signals = JSON.parse(r.signals_json || "{}"); } catch (e) {}
     try { flags = JSON.parse(r.flags_json || "[]"); } catch (e) {}
     return {
-      client_id: r.client_id,
-      client_name: r.client_name,
+      client_id: c.id,
+      client_name: c.name,
       composite_score: r.composite_score,
       trend: r.trend,
       signals,
       flags
     };
   });
-  return json({ score_date: latest.d, clients });
+  clients.sort((x, y) => (x.composite_score == null || x.composite_score < 0 ? 999 : x.composite_score) - (y.composite_score == null || y.composite_score < 0 ? 999 : y.composite_score));
+  return json({ score_date: latest.d, clients, dropped: scored.filter((x) => !used.has(x)).map((x) => x.r.client_name) });
 }
 __name(handleClientHealth, "handleClientHealth");
 async function handleServicesList(request, env) {
@@ -5425,7 +5444,7 @@ var CH_CSS = '.ch-sub{color:var(--text-dim);font-size:13px;margin-bottom:18px}'
 + '.ch-row{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:10px}'
 + '.ch-row-main{display:flex;align-items:center;gap:16px}'
 + '.ch-pill{font-size:20px;font-weight:700;min-width:54px;height:46px;display:flex;align-items:center;justify-content:center;border-radius:10px}'
-+ '.ch-s-red{background:var(--red-bg);color:var(--red)}.ch-s-amber{background:var(--amber-bg);color:var(--amber)}.ch-s-green{background:var(--green-bg);color:var(--green)}'
++ '.ch-s-red{background:var(--red-bg);color:var(--red)}.ch-s-amber{background:var(--amber-bg);color:var(--amber)}.ch-s-green{background:var(--green-bg);color:var(--green)}.ch-s-none{background:transparent;color:inherit;opacity:.45;border:1px dashed currentColor}'
 + '.ch-name{flex:1}.ch-cn{font-size:16px;font-weight:700}'
 + '.ch-flags{margin-top:5px;display:flex;gap:6px;flex-wrap:wrap}'
 + '.ch-flag{font-size:11px;font-weight:600;background:var(--red-bg);color:var(--red);padding:2px 8px;border-radius:6px}'
@@ -5447,6 +5466,7 @@ async function loadClientHealth() {
 }
 
 function chScoreClass(score, trend) {
+  if (score == null || score < 0) return 'none';
   if (trend === 'critical' || score < 60) return 'red';
   if (score < 85) return 'amber';
   return 'green';
@@ -5475,7 +5495,7 @@ function renderClientHealth() {
   if (!clientHealthData) return;
   var data = clientHealthData.clients || [];
   var nr = 0, na = 0, ng = 0;
-  data.forEach(function(c) { var cl = chScoreClass(c.composite_score, c.trend); if (cl === 'red') nr++; else if (cl === 'amber') na++; else ng++; });
+  data.forEach(function(c) { var cl = chScoreClass(c.composite_score, c.trend); if (cl === 'red') nr++; else if (cl === 'amber') na++; else if (cl === 'green') ng++; });
   var html = '<style>' + CH_CSS + '</style>';
   html += '<div class="ch-sub">Daily composite health score across all clients. Updated 7am ET. Lower = at risk.' + (clientHealthData.score_date ? ' · ' + clientHealthData.score_date : '') + '</div>';
   html += '<div class="ch-summary">';
@@ -5491,7 +5511,7 @@ function renderClientHealth() {
     var flags = (c.flags && c.flags.length) ? c.flags.map(function(f) { return '<span class="ch-flag">' + esc(f) + '</span>'; }).join('') : '<span class="ch-flag-none">no flags</span>';
     var ti = ({up:'▲',flat:'—',down:'▼',critical:'⚠'})[c.trend] || '—';
     html += '<div class="ch-row"><div class="ch-row-main">';
-    html += '<div class="ch-pill ch-s-' + cl + '">' + c.composite_score + '</div>';
+    html += '<div class="ch-pill ch-s-' + cl + '">' + (cl === 'none' ? '\u2014' : c.composite_score) + '</div>';
     html += '<div class="ch-name"><div class="ch-cn">' + esc(c.client_name) + '</div><div class="ch-flags">' + flags + '</div></div>';
     html += '<span class="ch-trend ch-t-' + c.trend + '">' + ti + ' ' + c.trend + '</span>';
     html += '</div><div class="ch-chips">' + chips + '</div></div>';

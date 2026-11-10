@@ -29,15 +29,36 @@ function getCookie(request, name) {
   return match ? match.slice(name.length + 1) : null;
 }
 __name(getCookie, "getCookie");
+// 2026-11-10 one front door: expiring signed sessions + the shared ee_sso cookie
+// (hub, Sprint Tracker, Command Center on .engageengine.ai). Replaces the old static
+// "session" token, which never expired and had no Secure flag.
+async function ssoSign(env, msg) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.SSO_SIGNING_KEY || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(msg));
+  return btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+__name(ssoSign, "ssoSign");
+async function ssoIssue(env) {
+  const exp = Date.now() + 30 * 864e5;
+  return exp + "." + await ssoSign(env, "ee-sso:" + exp);
+}
+__name(ssoIssue, "ssoIssue");
+async function ssoValid(env, tok) {
+  if (!env.SSO_SIGNING_KEY || !tok) return false;
+  const i = tok.lastIndexOf(".");
+  if (i < 1) return false;
+  const exp = tok.slice(0, i), sig = tok.slice(i + 1);
+  if (!/^\d+$/.test(exp) || Number(exp) < Date.now()) return false;
+  return sig === await ssoSign(env, "ee-sso:" + exp);
+}
+__name(ssoValid, "ssoValid");
 async function authMiddleware(request, env) {
-  const token = getCookie(request, "session");
-  if (!token)
-    return false;
   try {
-    return await isValidToken(env.APP_PASSWORD, token);
+    if (await ssoValid(env, getCookie(request, "ee_sso"))) return true;
+    if (await ssoValid(env, getCookie(request, "session"))) return true;
   } catch {
-    return false;
   }
+  return false;
 }
 __name(authMiddleware, "authMiddleware");
 function genId(prefix) {
@@ -149,9 +170,13 @@ async function handleLogin(request, env) {
   if (!env.APP_PASSWORD || body.password !== env.APP_PASSWORD) {
     return json({ error: "Incorrect password" }, 401);
   }
-  const token = await makeToken(env.APP_PASSWORD);
-  const cookie = `session=${token}; HttpOnly; SameSite=Lax; Max-Age=604800; Path=/`;
-  return json({ ok: true }, 200, { "Set-Cookie": cookie });
+  const token = await ssoIssue(env);
+  const host = new URL(request.url).hostname;
+  const dom = host.endsWith("engageengine.ai") ? "; Domain=.engageengine.ai" : "";
+  const h = new Headers({ "Content-Type": "application/json" });
+  h.append("Set-Cookie", `session=${token}; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000; Path=/`);
+  h.append("Set-Cookie", `ee_sso=${token}; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000; Path=/${dom}`);
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers: h });
 }
 __name(handleLogin, "handleLogin");
 // Decide-or-kill: an open task nobody has touched in 14+ days and that isn't

@@ -6400,6 +6400,19 @@ async function handleActivityIngest(request, env) {
       const row = await env.DB.prepare("SELECT id, name FROM sprint_clients WHERE domain = ?1 OR name = ?1 LIMIT 1").bind(String(cand)).first().catch(() => null);
       if (row) { clientId = String(row.id); clientName = row.name; resolved = true; break; }
     }
+    // 2026-11-10: fall back to the identities table (domains, emails, name variants such
+    // as "Mt. Horeb" or "Sheppard's Glass Shop") so variant spellings attach to the
+    // client instead of landing with no client. client_name keeps what the caller sent,
+    // because the client-facing ledger groups by it.
+    if (!resolved) {
+      for (const cand of candidates) {
+        const row = await env.DB.prepare(
+          "SELECT c.id FROM identities i JOIN sprint_clients c ON c.id = i.client_id WHERE i.value = LOWER(TRIM(?1)) LIMIT 1"
+        ).bind(String(cand)).first().catch(() => null);
+        if (row) { clientId = String(row.id); resolved = true; break; }
+      }
+      if (resolved && !clientName) clientName = nd || null;
+    }
     if (!resolved && !clientName) clientName = nd || (body.domain ? String(body.domain) : null);
   }
   const score = body.score != null && body.score !== "" ? Number(body.score) : null;

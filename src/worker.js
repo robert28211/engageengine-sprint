@@ -145,6 +145,8 @@ var ROUTES = [
   // Client activity spine — ingest (X-Internal-Secret gated) + per-client timeline (session gated)
   { method: "POST", re: /^\/api\/internal\/activity$/, handler: handleActivityIngest, public: true },
   { method: "GET", re: /^\/api\/clients\/([^/]+)\/activity$/, handler: (r, e, m) => handleClientActivity(r, e, m[1]) },
+  // Manual changelog entry ("on Nov 5 we changed the headline") — session gated
+  { method: "POST", re: /^\/api\/clients\/([^/]+)\/change$/, handler: (r, e, m) => handleClientChange(r, e, m[1]) },
   // Firm-wide cross-client activity feed (session gated)
   { method: "GET", re: /^\/api\/activity$/, handler: handleActivityFeed },
   // Cloud-agent status feed — reads agent_launches (shared command-center D1, written by engageengine-agents worker)
@@ -5877,6 +5879,7 @@ function fmtActivityDate(s){if(!s)return'';var d=String(s).split(' ')[0];var p=d
 async function loadClientActivity(clientId){
   var wrap=document.getElementById('clientActivity');
   if(!wrap)return;
+  window._activityClientId=clientId;
   try{
     var res=await fetch(API+'/api/clients/'+clientId+'/activity');
     if(!res.ok){wrap.innerHTML='';return;}
@@ -5885,11 +5888,28 @@ async function loadClientActivity(clientId){
   }catch(e){wrap.innerHTML='';}
 }
 
+async function addClientChange(){
+  var id=window._activityClientId;var t=document.getElementById('changeText');var d=document.getElementById('changeDate');
+  if(!id||!t||!t.value.trim())return;
+  try{
+    var res=await fetch(API+'/api/clients/'+id+'/change',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:d.value,text:t.value.trim()})});
+    var out=await res.json().catch(function(){return{};});
+    if(!res.ok){showSnackbar(out.error||'Failed to save');return;}
+    showSnackbar('Change logged');
+    loadClientActivity(id);
+  }catch(e){showSnackbar('Failed to save');}
+}
+
 function renderClientActivity(rows){
   var wrap=document.getElementById('clientActivity');
   if(!wrap)return;
-  if(!rows.length){wrap.innerHTML='';return;}
+  var today=new Date();var td=today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0')+'-'+String(today.getDate()).padStart(2,'0');
   var html='<div class="section-title" style="margin-top:24px">Client Activity</div>';
+  html+='<div style="display:flex;gap:8px;align-items:center;margin:8px 0 4px;flex-wrap:wrap">';
+  html+='<input type="date" id="changeDate" value="'+td+'" max="'+td+'" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px">';
+  html+='<input type="text" id="changeText" placeholder="Log a change: what changed, in one line" maxlength="1000" style="flex:1;min-width:220px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px" onkeydown="if(event.key===&quot;Enter&quot;)addClientChange()">';
+  html+='<button class="save-btn" onclick="addClientChange()">Add change</button>';
+  html+='</div>';
   html+='<div class="activity-list">';
   for(var i=0;i<rows.length;i++){
     var r=rows[i];
@@ -6506,6 +6526,24 @@ async function handleActivityIngest(request, env) {
   return json({ ok: true, id: ins.meta?.last_row_id ?? null, resolved, auto_completed: autoCompleted });
 }
 __name(handleActivityIngest, "handleActivityIngest");
+// Manual changelog entry: a dated change that never came up in a meeting or email.
+// tool "manual" / kind "change" — internal only (ledger.WORK_TOOLS never reads it).
+async function handleClientChange(request, env, clientId) {
+  let body;
+  try { body = await request.json(); } catch (e) { return json({ error: "invalid JSON" }, 400); }
+  const text = String(body.text || "").trim();
+  const date = String(body.date || "").trim();
+  if (!text) return json({ error: "text is required" }, 400);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date + "T12:00:00Z"))) return json({ error: "date must be YYYY-MM-DD" }, 400);
+  if (Date.parse(date + "T12:00:00Z") > Date.now() + 86400000) return json({ error: "date cannot be in the future" }, 400);
+  const client = await env.DB.prepare("SELECT id, name FROM sprint_clients WHERE id = ?1").bind(String(clientId)).first();
+  if (!client) return json({ error: "client not found" }, 404);
+  const ins = await env.DB.prepare(
+    "INSERT INTO client_activity (client_id, client_name, tool, kind, summary, created_at) VALUES (?1, ?2, 'manual', 'change', ?3, ?4)"
+  ).bind(String(client.id), client.name, text.slice(0, 1000), date + " 12:00:00").run();
+  return json({ ok: true, id: ins.meta?.last_row_id ?? null });
+}
+__name(handleClientChange, "handleClientChange");
 async function handleClientActivity(request, env, clientId) {
   const rows = await env.DB.prepare(
     "SELECT id, client_id, client_name, tool, kind, score, summary, artifact_url, created_at, expected_outcome, review_at, outcome_status, outcome_note FROM client_activity WHERE client_id = ?1 ORDER BY created_at DESC LIMIT 100"

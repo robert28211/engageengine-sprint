@@ -73,13 +73,13 @@ TEMPLATES = [
    ("Ticket the bigger structural changes", "Staff", ""),
    ("Verify no conversion-tracking regressions after changes", "Staff", ""),
  ]),
- ("rt-daily", "Daily Ops (all clients)", "daily", "", 80, [
+ ("rt-daily", "Daily Ops (firm-wide)", "daily", "firm", 80, [
    ("Run `/adcheck top` daily (top-spender Google Ads pulse); full `/adcheck` sweep (all clients + Meta + GA4) Mon/Wed/Fri — act on flags only", "Staff", "adcheck"),
    ("Run /morning inbox sweep → today's action items", "Staff", ""),
    ("Lead-recap → Neo Drafts (never auto-sends)", "Staff", ""),
    ("Verify the intent pipeline ran today", "Staff", ""),
  ]),
- ("rt-weekly", "Weekly Ops (all clients)", "weekly", "", 90, [
+ ("rt-weekly", "Weekly Ops (firm-wide)", "weekly", "firm", 90, [
    ("Vendasta check: social calendar + reviews + citations (pull via API)", "Staff", ""),
    ("Weekly LEADS recap (leads + pixel + Top-5 prospects + calls)", "Staff", ""),
  ]),

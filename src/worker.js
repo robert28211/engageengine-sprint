@@ -331,8 +331,8 @@ async function handleClientCreate(request, env) {
     return json({ error: "Name already exists" }, 409);
   const id = genId("client");
   await env.DB.prepare(
-    `INSERT INTO sprint_clients (id, name, status, has_sprint, archived, notes, created_at, updated_at)
-     VALUES (?, ?, 'Active', 0, 0, '', date('now'), date('now'))`
+    `INSERT INTO sprint_clients (id, name, status, has_sprint, archived, notes, stage, created_at, updated_at)
+     VALUES (?, ?, 'Active', 0, 0, '', 'onboarding', date('now'), date('now'))`
   ).bind(id, name).run();
   return json({ success: true, id });
 }
@@ -354,10 +354,33 @@ async function handleClientUpdate(request, env, clientId) {
 }
 __name(handleClientUpdate, "handleClientUpdate");
 async function handleClientArchive(request, env, clientId) {
-  await env.DB.prepare(
-    `UPDATE sprint_clients SET archived=1, updated_at=date('now') WHERE id=?`
-  ).bind(clientId).run();
-  return json({ success: true });
+  // 2026-11-12: archiving IS offboarding. It used to set archived=1 and nothing else,
+  // leaving services on, the client on the Routine and open tasks behind. Now, in one
+  // batch: services off (cancelled; website keeps its host code), off the Routine and
+  // the Sprint, stage 'former', open routine steps cleared, the P4 Offboarding job
+  // created (its steps cover ad spend, scheduled tasks, our loops, hand-back), and one
+  // client_activity row so the timeline shows when it happened.
+  const c = await env.DB.prepare("SELECT id, name, archived FROM sprint_clients WHERE id=?").bind(clientId).first();
+  if (!c) return json({ error: "Unknown client" }, 404);
+  if (c.archived) return json({ success: true, already: true });
+  const stmts = [
+    env.DB.prepare("UPDATE sprint_clients SET archived=1, on_routine=0, has_sprint=0, stage='former', updated_at=date('now') WHERE id=?").bind(clientId),
+    env.DB.prepare("UPDATE client_services SET status='cancelled' WHERE client_id=? AND service!='website' AND status IN ('active','pending','paused')").bind(clientId),
+    env.DB.prepare("DELETE FROM sprint_tasks WHERE client_id=? AND status='Not Started' AND COALESCE(blocked_by,'')='' AND job_id IN (SELECT job_id FROM routine_generation WHERE client_id=?)").bind(clientId, clientId)
+  ];
+  const p4 = (await env.DB.prepare("SELECT id, notes, assigned_to_role FROM sprint_template_tasks WHERE template_id='rt-p4-offboard' ORDER BY sort_order").all()).results || [];
+  // Every board hides an archived client's jobs, so the P4 job lives on the agency's
+  // own record, named for the departing client, where it stays visible until done.
+  const owner = (await routineFirmClientId(env)) || clientId;
+  let offboardJob = null;
+  if (p4.length) {
+    offboardJob = genId("job");
+    stmts.push(env.DB.prepare("INSERT INTO sprint_jobs (id, client_id, name, status, assigned_to, due_date, created_at, updated_at) VALUES (?, ?, ?, 'Active', '', date('now','+7 days'), date('now'), date('now'))").bind(offboardJob, owner, "P4 · Offboarding — " + c.name));
+    for (const t of p4) stmts.push(env.DB.prepare("INSERT INTO sprint_tasks (id, job_id, client_id, task_id, notes, status, assigned_to, due_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'Not Started', ?, date('now','+7 days'), date('now'), date('now'))").bind(genId("task"), offboardJob, owner, `tmpl-${t.id}`, c.name + ": " + t.notes, t.assigned_to_role || ""));
+  }
+  stmts.push(env.DB.prepare("INSERT INTO client_activity (client_id, client_name, tool, kind, summary, created_at) VALUES (?, ?, 'lifecycle', 'offboarded', ?, CURRENT_TIMESTAMP)").bind(clientId, c.name, "Archived in the Sprint Tracker: services cancelled, off the Routine, P4 Offboarding job opened"));
+  await env.DB.batch(stmts);
+  return json({ success: true, offboard_job_id: offboardJob });
 }
 __name(handleClientArchive, "handleClientArchive");
 async function handleClientNotes(request, env, clientId) {
@@ -660,7 +683,7 @@ async function handleSprintActivate(request, env) {
   if (access.missing.length && body.override_by !== "Robbie")
     return json({ error: "Access not confirmed: " + access.missing.join(", ") + ". Fix these on the Access tab, then start the sprint.", missing: access.missing, gate: "access" }, 409);
   await env.DB.prepare(
-    `UPDATE sprint_clients SET has_sprint=1, start_date=?, updated_at=date('now') WHERE id=?`
+    `UPDATE sprint_clients SET has_sprint=1, start_date=?, stage='sprint', updated_at=date('now') WHERE id=?`
   ).bind(start_date || (/* @__PURE__ */ new Date()).toISOString().split("T")[0], client_id).run();
   return json({ success: true });
 }
@@ -669,16 +692,32 @@ async function handleSprintDeactivate(request, env) {
   const body = await request.json().catch(() => ({}));
   const clientId = body.client_id;
   if (!clientId) return json({ error: "client_id required" }, 400);
-  // Graduate: leave the 30-Day Sprint but keep the client + their checklist history.
-  await env.DB.prepare("UPDATE sprint_clients SET has_sprint=0, updated_at=date('now') WHERE id=?").bind(clientId).run();
-  return json({ ok: true });
+  // Graduate: leave the 30-Day Sprint, keep the checklist history, and move straight
+  // onto the Routine in the same step (2026-11-12) — a graduating client used to drop
+  // out of both, because joining the Routine was a separate manual toggle.
+  await env.DB.prepare("UPDATE sprint_clients SET has_sprint=0, stage='routine', on_routine=1, updated_at=date('now') WHERE id=?").bind(clientId).run();
+  const gen = await generateRoutineJobs(env, { client_id: clientId });
+  return json({ ok: true, stage: "routine", routine_cycles_created: gen.filter((r) => r.action === "created").length });
 }
 __name(handleSprintDeactivate, "handleSprintDeactivate");
 // ── Routine engine ────────────────────────────────────────────────────────────
 // Recurring per-client operating loop. Routine templates (is_routine=1) with a
 // cadence auto-generate a Job + Tasks per eligible client, once per cadence period.
-// Eligibility: applies_when empty = all sprint clients; otherwise the client must
-// have at least one of the listed services active in client_services.
+// Eligibility: the client is on_routine=1 and not archived. applies_when empty = every
+// routine client that has at least one service ON; otherwise the client must have one
+// of the listed services ON. applies_when 'firm' = a firm-wide chore: ONE job per
+// period on the agency's own record (Marketing Performance), never copied per client.
+// A service is ON when its status is 'active' (2026-11-12: one rule everywhere;
+// paused / pending / cancelled are off). Website holds the host code (B/M/O), so any
+// host code counts as on for website — but hosting alone never makes a client a
+// Routine client: membership and the all-client tracks need a paid service 'active'.
+const SVC_ON_SQL = "(status='active' OR (service='website' AND status IN ('B','M','O')))";
+const FIRM_CLIENT_NAME = "Marketing Performance";
+async function routineFirmClientId(env) {
+  const r = await env.DB.prepare("SELECT id FROM sprint_clients WHERE name=? AND archived=0 LIMIT 1").bind(FIRM_CLIENT_NAME).first().catch(() => null);
+  return r ? r.id : null;
+}
+__name(routineFirmClientId, "routineFirmClientId");
 function routineAddDays(today, n) {
   const d = new Date(today + "T00:00:00Z");
   d.setUTCDate(d.getUTCDate() + n);
@@ -713,24 +752,33 @@ async function generateRoutineJobs(env, opts = {}) {
   const cb = [];
   if (onlyClient) { clientSql += " AND id=?"; cb.push(onlyClient); }
   const clients = (await env.DB.prepare(clientSql).bind(...cb).all()).results;
-  const svcRows = (await env.DB.prepare("SELECT client_id, service FROM client_services WHERE status NOT IN ('none','','pending')").all()).results;
+  const firmId = await routineFirmClientId(env);
+  const firmRows = firmId && (!onlyClient || onlyClient === firmId)
+    ? (await env.DB.prepare("SELECT id, name FROM sprint_clients WHERE id=?").bind(firmId).all()).results : [];
+  const svcRows = (await env.DB.prepare(`SELECT client_id, service FROM client_services WHERE ${SVC_ON_SQL}`).all()).results;
   const svcByClient = {};
   for (const s of svcRows) { (svcByClient[s.client_id] = svcByClient[s.client_id] || /* @__PURE__ */ new Set()).add(s.service); }
+  // One read of this run's periods instead of one SELECT per (template x client).
+  const periods = [...new Set(tmpls.map((t) => routinePeriodKey(t.cadence, today)))];
+  const genDone = /* @__PURE__ */ new Set();
+  if (periods.length) {
+    const gr = (await env.DB.prepare(`SELECT template_id, client_id, period_key FROM routine_generation WHERE period_key IN (${periods.map(() => "?").join(",")})`).bind(...periods).all()).results;
+    for (const g of gr) genDone.add(g.template_id + "|" + g.client_id + "|" + g.period_key);
+  }
   const report = [];
   for (const t of tmpls) {
     const period = routinePeriodKey(t.cadence, today);
     const dueDate = routineAddDays(today, dueDays[t.cadence] || 7);
     const applies = (t.applies_when || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const isFirm = applies.includes("firm");
     const tasks = (await env.DB.prepare("SELECT * FROM sprint_template_tasks WHERE template_id=? ORDER BY sort_order").bind(t.id).all()).results;
-    for (const c of clients) {
-      if (applies.length) {
+    for (const c of (isFirm ? firmRows : clients)) {
+      if (!isFirm) {
         const svc = svcByClient[c.id] || /* @__PURE__ */ new Set();
-        if (!applies.some((a) => svc.has(a))) continue;
+        // Empty applies_when needs a PAID service on; website hosting alone doesn't count.
+        if (applies.length ? !applies.some((a) => svc.has(a)) : ![...svc].some((x) => x !== "website")) continue;
       }
-      const existing = await env.DB.prepare(
-        "SELECT job_id FROM routine_generation WHERE template_id=? AND client_id=? AND period_key=?"
-      ).bind(t.id, c.id, period).first();
-      if (existing) { report.push({ template: t.name, client: c.name, period, action: "exists" }); continue; }
+      if (genDone.has(t.id + "|" + c.id + "|" + period)) { report.push({ template: t.name, client: c.name, period, action: "exists" }); continue; }
       if (dryRun) { report.push({ template: t.name, client: c.name, period, action: "would_create" }); continue; }
       const jobId = genId("job");
       const stmts = [
@@ -764,19 +812,40 @@ async function reapSupersededRoutineTasks(env) {
      WHERE EXISTS (
        SELECT 1 FROM routine_generation r2
        WHERE r2.template_id=rg.template_id AND r2.client_id=rg.client_id AND r2.rowid > rg.rowid
-     )`
+     )
+     AND EXISTS (SELECT 1 FROM sprint_tasks st WHERE st.job_id=rg.job_id AND st.status='Not Started' AND COALESCE(st.blocked_by,'')='')`
   ).all()).results || [];
-  if (!stale.length) return 0;
+  if (!stale.length) return { removed: 0, missed: 0 };
   const ids = stale.map((r) => r.job_id);
-  let removed = 0;
+  let removed = 0, missed = 0;
   for (let i = 0; i < ids.length; i += 40) {
     const chunk = ids.slice(i, i + 40);
     const ph = chunk.map(() => "?").join(",");
-    const r = await env.DB.prepare(`DELETE FROM sprint_tasks WHERE status='Not Started' AND job_id IN (${ph})`).bind(...chunk).run();
+    // 2026-11-12: never erase undelivered work without a trace. Before deleting a
+    // superseded job's open steps, write ONE client_activity row per job saying the
+    // cycle was missed (tool 'routine:<template>', kind 'missed'). Firm-wide chores
+    // are not client work, so they are cleared without a row. Blocked steps
+    // (waiting on someone) are kept, not deleted.
+    const open = (await env.DB.prepare(
+      `SELECT j.id job_id, j.client_id, j.name job_name, c.name client_name, rg.template_id,
+              SUM(CASE WHEN t.status='Not Started' AND COALESCE(t.blocked_by,'')='' THEN 1 ELSE 0 END) open_n,
+              COUNT(t.id) total_n
+         FROM sprint_jobs j JOIN routine_generation rg ON rg.job_id=j.id
+         LEFT JOIN sprint_templates tm ON tm.id=rg.template_id
+         LEFT JOIN sprint_clients c ON c.id=j.client_id
+         LEFT JOIN sprint_tasks t ON t.job_id=j.id
+        WHERE j.id IN (${ph}) AND COALESCE(tm.applies_when,'') != 'firm'
+        GROUP BY j.id`
+    ).bind(...chunk).all()).results || [];
+    const rows = open.filter((o) => o.open_n > 0).map((o) => env.DB.prepare(
+      "INSERT INTO client_activity (client_id, client_name, tool, kind, summary, created_at) VALUES (?, ?, ?, 'missed', ?, CURRENT_TIMESTAMP)"
+    ).bind(o.client_id, o.client_name, "routine:" + o.template_id, `${o.job_name}: ${o.open_n} of ${o.total_n} steps not done when the cycle closed`));
+    if (rows.length) { await env.DB.batch(rows); missed += rows.length; }
+    const r = await env.DB.prepare(`DELETE FROM sprint_tasks WHERE status='Not Started' AND COALESCE(blocked_by,'')='' AND job_id IN (${ph})`).bind(...chunk).run();
     removed += r.meta?.changes || 0;
     await env.DB.prepare(`DELETE FROM sprint_jobs WHERE id IN (${ph}) AND NOT EXISTS (SELECT 1 FROM sprint_tasks st WHERE st.job_id=sprint_jobs.id)`).bind(...chunk).run();
   }
-  return removed;
+  return { removed, missed };
 }
 __name(reapSupersededRoutineTasks, "reapSupersededRoutineTasks");
 async function handleRoutineGenerate(request, env) {
@@ -798,10 +867,26 @@ __name(handleRoutineStatus, "handleRoutineStatus");
 async function handleRoutineBoard(request, env) {
   const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
   const tmpls = (await env.DB.prepare("SELECT id, name, cadence, applies_when, sort_order FROM sprint_templates WHERE is_routine=1 AND cadence IN ('daily','weekly','monthly','45day') ORDER BY sort_order").all()).results;
-  const clients = (await env.DB.prepare("SELECT id, name FROM sprint_clients WHERE on_routine=1 AND archived=0 ORDER BY name").all()).results;
-  const svcRows = (await env.DB.prepare("SELECT client_id, service FROM client_services WHERE status NOT IN ('none','','pending')").all()).results;
+  const firmId = await routineFirmClientId(env);
+  const clients = (await env.DB.prepare("SELECT id, name, COALESCE(stage,'') stage FROM sprint_clients WHERE (on_routine=1 OR id=?) AND archived=0 ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END, name").bind(firmId || "", firmId || "").all()).results;
+  for (const c of clients) c.firm = c.id === firmId;
+  const svcRows = (await env.DB.prepare(`SELECT client_id, service FROM client_services WHERE ${SVC_ON_SQL}`).all()).results;
   const svcByClient = {};
   for (const s of svcRows) { (svcByClient[s.client_id] = svcByClient[s.client_id] || {})[s.service] = 1; }
+  // Missed cycles in the last 90 days, per (client, template) — written by the reaper.
+  const missedRows = (await env.DB.prepare(
+    "SELECT client_id, SUBSTR(tool, 9) template_id, COUNT(*) n, MAX(created_at) last_at FROM client_activity WHERE kind='missed' AND tool LIKE 'routine:%' AND created_at >= datetime('now','-90 days') GROUP BY client_id, tool"
+  ).all()).results || [];
+  const missedMap = {};
+  for (const m of missedRows) missedMap[m.client_id + "|" + m.template_id] = { n: m.n, last_at: m.last_at };
+  // Paying clients the Routine is NOT covering: unarchived, at least one service ON,
+  // on_routine=0. These get no recurring work until someone adds them, so say so.
+  const uncovered = (await env.DB.prepare(
+    `SELECT c.id, c.name, COALESCE(c.stage,'') stage, GROUP_CONCAT(s.service, ', ') services
+       FROM sprint_clients c JOIN client_services s ON s.client_id=c.id AND s.status='active'
+      WHERE c.archived=0 AND COALESCE(c.on_routine,0)=0 AND c.id != ?
+      GROUP BY c.id ORDER BY c.name`
+  ).bind(firmId || "").all()).results || [];
   const periodByCadence = {
     daily: routinePeriodKey("daily", today),
     weekly: routinePeriodKey("weekly", today),
@@ -816,10 +901,13 @@ async function handleRoutineBoard(request, env) {
   const jobIds = [];
   for (const g of genRows) { genMap[g.template_id + "|" + g.client_id + "|" + g.period_key] = g.job_id; if (g.job_id) jobIds.push(g.job_id); }
   const taskByJob = {};
-  if (jobIds.length) {
+  // Chunked: D1 allows at most 100 bound variables per statement, and with every
+  // paying client on the Routine there are far more jobs than that per period.
+  for (let i = 0; i < jobIds.length; i += 90) {
+    const chunk = jobIds.slice(i, i + 90);
     const trows = (await env.DB.prepare(
-      `SELECT job_id, COUNT(*) total, SUM(CASE WHEN status='Complete' THEN 1 ELSE 0 END) done, MIN(due_date) due FROM sprint_tasks WHERE job_id IN (${jobIds.map(() => "?").join(",")}) GROUP BY job_id`
-    ).bind(...jobIds).all()).results;
+      `SELECT job_id, COUNT(*) total, SUM(CASE WHEN status='Complete' THEN 1 ELSE 0 END) done, MIN(due_date) due FROM sprint_tasks WHERE job_id IN (${chunk.map(() => "?").join(",")}) GROUP BY job_id`
+    ).bind(...chunk).all()).results;
     for (const t of trows) taskByJob[t.job_id] = t;
   }
   const lastRows = (await env.DB.prepare("SELECT client_id, MAX(created_at) last_at FROM routine_generation GROUP BY client_id").all()).results;
@@ -835,7 +923,10 @@ async function handleRoutineBoard(request, env) {
     cells[c.id] = {};
     for (const t of tmpls) {
       const applies = (t.applies_when || "").split(",").map((s) => s.trim()).filter(Boolean);
-      const applicable = !applies.length || applies.some((a) => (svcByClient[c.id] || {})[a]);
+      const sv = svcByClient[c.id] || {};
+      const applicable = applies.includes("firm") ? c.firm
+        : (c.firm && !Object.keys(sv).filter((x) => x !== "website").length) ? false
+        : applies.length ? applies.some((a) => sv[a]) : Object.keys(sv).filter((x) => x !== "website").length > 0;
       const period = periodByCadence[t.cadence];
       const jobId = genMap[t.id + "|" + c.id + "|" + period] || null;
       let status = "na", total = 0, done = 0, due = null;
@@ -852,16 +943,22 @@ async function handleRoutineBoard(request, env) {
         pulse[t.cadence].total++;
         pulse[t.cadence][status] = (pulse[t.cadence][status] || 0) + 1;
       }
-      cells[c.id][t.id] = { applicable, status, total, done, due, job_id: jobId };
+      const ms = missedMap[c.id + "|" + t.id];
+      cells[c.id][t.id] = { applicable, status, total, done, due, job_id: jobId, missed: ms ? ms.n : 0, missed_last: ms ? ms.last_at : null };
     }
   }
-  return json({ today, templates: tmpls, clients, cells, lastGenerated: lastByClient, pulse, availableClients });
+  const missedTotal = missedRows.reduce((a, m) => a + m.n, 0);
+  return json({ today, templates: tmpls, clients, cells, lastGenerated: lastByClient, pulse, availableClients, uncovered, missedTotal });
 }
 __name(handleRoutineBoard, "handleRoutineBoard");
 async function handleRoutineClientToggle(request, env, clientId) {
   const body = await request.json().catch(() => ({}));
   const on = body.on_routine ? 1 : 0;
-  await env.DB.prepare("UPDATE sprint_clients SET on_routine=?, updated_at=date('now') WHERE id=?").bind(on, clientId).run();
+  // Adding a client to the Routine moves an onboarding client to the routine stage.
+  // Removing is an opt-out: the stage stays, only recurring generation stops.
+  await env.DB.prepare(
+    "UPDATE sprint_clients SET on_routine=?, stage=CASE WHEN ?=1 AND COALESCE(stage,'') IN ('','onboarding') THEN 'routine' ELSE stage END, updated_at=date('now') WHERE id=?"
+  ).bind(on, on, clientId).run();
   return json({ ok: true, on_routine: on });
 }
 __name(handleRoutineClientToggle, "handleRoutineClientToggle");
@@ -1669,6 +1766,25 @@ async function writeSprintGmailHeartbeat(env, errorMessage) {
   }
 }
 __name(writeSprintGmailHeartbeat, "writeSprintGmailHeartbeat");
+// Same table the Gmail poll reports to, so the existing heartbeat watch sees the
+// Routine engine too: last_ok goes stale after 26h if the daily run stops or fails.
+async function writeRoutineHeartbeat(env, errorMessage, meta) {
+  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+  try {
+    if (errorMessage) {
+      await env.DB.prepare(`INSERT INTO pipeline_heartbeats (pipeline, last_run, last_ok, last_error, expected_hours, meta)
+        VALUES ('sprint-routine', ?, NULL, ?, 26, NULL)
+        ON CONFLICT(pipeline) DO UPDATE SET last_run=excluded.last_run, last_error=excluded.last_error, expected_hours=excluded.expected_hours`).bind(nowIso, errorMessage).run();
+    } else {
+      await env.DB.prepare(`INSERT INTO pipeline_heartbeats (pipeline, last_run, last_ok, last_error, expected_hours, meta)
+        VALUES ('sprint-routine', ?, ?, NULL, 26, ?)
+        ON CONFLICT(pipeline) DO UPDATE SET last_run=excluded.last_run, last_ok=excluded.last_ok, last_error=NULL, expected_hours=excluded.expected_hours, meta=excluded.meta`).bind(nowIso, nowIso, meta).run();
+    }
+  } catch (hbErr) {
+    console.error("Failed to write sprint-routine heartbeat:", hbErr);
+  }
+}
+__name(writeRoutineHeartbeat, "writeRoutineHeartbeat");
 var worker_default = {
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
@@ -1695,11 +1811,16 @@ var worker_default = {
         const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
         const st = await env.DB.prepare("SELECT v FROM routine_state WHERE k='last_gen_date'").first().catch(() => null);
         if (!st || st.v !== today) {
-          await reapSupersededRoutineTasks(env);
-          await generateRoutineJobs(env, {});
+          const reaped = await reapSupersededRoutineTasks(env);
+          const gen = await generateRoutineJobs(env, {});
           await env.DB.prepare("INSERT INTO routine_state (k, v) VALUES ('last_gen_date', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(today).run();
+          const meta = JSON.stringify({ created: gen.filter((r) => r.action === "created").length, exists: gen.filter((r) => r.action === "exists").length, reaped: reaped.removed, missed: reaped.missed });
+          await writeRoutineHeartbeat(env, null, meta);
         }
       } catch (e) {
+        // 2026-11-12: this catch used to be empty, so a failed day left no trace.
+        console.error("Routine engine failed:", e);
+        await writeRoutineHeartbeat(env, String(e && e.message || e), null);
       }
     })());
   },
@@ -2633,6 +2754,14 @@ body{padding-bottom:80px}
 .rt-pill.na{background:transparent;color:var(--text-muted);min-width:auto}
 .rt-pill.done:hover,.rt-pill.partial:hover,.rt-pill.pending:hover,.rt-pill.overdue:hover{filter:brightness(.96);outline:2px solid var(--accent-glow)}
 .rt-legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--text-dim)}
+.rt-gap{border:1px solid var(--red);background:var(--red-bg);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px}
+.rt-gap b{color:var(--red)}
+.rt-gap span{color:var(--text-dim)}
+.rt-gap-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.rt-gap-item{border:1px solid var(--red);background:transparent;color:var(--red);border-radius:20px;padding:3px 10px;font-size:12px;cursor:pointer}
+.rt-gap-item:hover{background:var(--red);color:#fff}
+.rt-missed{display:inline-block;margin-left:4px;min-width:16px;padding:0 4px;border-radius:8px;background:var(--red);color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center;vertical-align:middle}
+.rt-firm-tag{font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em;margin-left:4px}
 .rt-legend span{display:flex;align-items:center;gap:5px}
 .rt-dot{width:10px;height:10px;border-radius:50%;display:inline-block}
 .rt-dot.done{background:var(--green)}.rt-dot.partial{background:var(--amber)}.rt-dot.pending{background:var(--text-muted)}.rt-dot.overdue{background:var(--red)}.rt-dot.none{background:transparent;border:1px dashed var(--text-muted)}.rt-dot.na{background:var(--surface2);border:1px solid var(--border)}
@@ -3071,6 +3200,20 @@ function renderRoutine() {
     + '<div class="rt-toolbar-actions">' + addCtl
     + '<button class="rt-gen-all" onclick="generateRoutine(null,this)">&#8635; Generate all due</button>'
     + '</div></div>';
+  // Coverage gaps: paying clients the Routine is not covering, and missed cycles.
+  var unc = d.uncovered || [];
+  if (unc.length) {
+    bar += '<div class="rt-gap"><div class="rt-gap-head"><b>' + unc.length + ' client' + (unc.length===1?'':'s') + ' with a service on but not on the Routine</b>'
+      + '<span> &middot; they get no recurring report, audit or check tasks until added</span></div><div class="rt-gap-list">';
+    for (var ui=0; ui<unc.length; ui++) {
+      bar += '<button class="rt-gap-item" title="' + esc(unc[ui].services || '') + '" onclick="addClientToRoutine(\\'' + unc[ui].id + '\\')">+ ' + esc(unc[ui].name) + '</button>';
+    }
+    bar += '</div></div>';
+  }
+  if (d.missedTotal) {
+    bar += '<div class="rt-gap rt-gap-missed"><b>' + d.missedTotal + ' missed cycle' + (d.missedTotal===1?'':'s') + ' in the last 90 days</b>'
+      + '<span> &middot; red numbers in the grid show which client and track. A cycle is missed when it closes with steps not done.</span></div>';
+  }
   // Matrix
   var t = '<div class="rt-board-wrap"><table class="rt-board"><thead><tr><th class="rt-csticky">Client</th>';
   for (var ti=0; ti<d.templates.length; ti++) {
@@ -3080,7 +3223,7 @@ function renderRoutine() {
   t += '</tr></thead><tbody>';
   for (var ci=0; ci<d.clients.length; ci++) {
     var c = d.clients[ci];
-    t += '<tr><td class="rt-csticky"><div class="rt-cname">' + esc(c.name) + '</div>'
+    t += '<tr' + (c.firm ? ' class="rt-firm"' : '') + '><td class="rt-csticky"><div class="rt-cname">' + esc(c.name) + (c.firm ? ' <span class="rt-firm-tag">firm-wide chores</span>' : '') + '</div>'
       + '<div class="rt-cmeta"><button class="rt-gen" title="Generate this client\\'s cycle" onclick="generateRoutine(\\'' + c.id + '\\',this)">&#8635;</button>'
       + '<button class="rt-remove" title="Remove from routine" onclick="removeClientFromRoutine(\\'' + c.id + '\\',\\'' + esc(c.name).split("\\'").join("") + '\\')">&times;</button>'
       + '<span class="rt-last">gen ' + rtRelative(d.lastGenerated[c.id]) + '</span></div></td>';
@@ -3104,11 +3247,12 @@ function renderRoutine() {
 }
 
 function renderRoutineCell(clientId, tmid, cell) {
-  if (!cell.applicable) return '<td class="rt-cell"><span class="rt-pill na">&mdash;</span></td>';
-  if (cell.status === 'none') return '<td class="rt-cell"><span class="rt-pill none" title="Not generated this cycle">&middot;</span></td>';
+  var miss = cell.missed ? '<span class="rt-missed" title="' + cell.missed + ' missed cycle' + (cell.missed===1?'':'s') + ' in 90 days, last ' + esc(String(cell.missed_last || '').slice(0,10)) + '">' + cell.missed + '</span>' : '';
+  if (!cell.applicable) return '<td class="rt-cell"><span class="rt-pill na">&mdash;</span>' + miss + '</td>';
+  if (cell.status === 'none') return '<td class="rt-cell"><span class="rt-pill none" title="Not generated this cycle">&middot;</span>' + miss + '</td>';
   var label = (cell.status === 'done') ? '&#10003; ' + cell.done + '/' + cell.total : cell.done + '/' + cell.total;
   var click = cell.job_id ? ' onclick="openRoutineDrawer(\\'' + cell.job_id + '\\')"' : '';
-  return '<td class="rt-cell"><span class="rt-pill ' + cell.status + '"' + click + '>' + label + '</span></td>';
+  return '<td class="rt-cell"><span class="rt-pill ' + cell.status + '"' + click + '>' + label + '</span>' + miss + '</td>';
 }
 
 async function generateRoutine(clientId, btn) {
@@ -6161,7 +6305,8 @@ async function handleAuditClients(request, env) {
   const rows = await env.DB.prepare(`
     SELECT c.id, c.name FROM sprint_clients c
     JOIN client_services s ON s.client_id = c.id AND s.service = 'gads' AND s.status = 'active'
-    WHERE c.archived = 0 AND c.google_ads_customer_id IS NOT NULL AND c.google_ads_customer_id != ''
+    LEFT JOIN client_platform_ids p ON p.client_id = c.id
+    WHERE c.archived = 0 AND COALESCE(NULLIF(p.gads_cid,''), NULLIF(c.google_ads_customer_id,'')) IS NOT NULL
     ORDER BY c.name
   `).all();
   return json(rows.results || []);
@@ -6416,7 +6561,9 @@ async function handleRoster(request, env) {
   const ok = !!sec && ((env.ROSTER_READ_SECRET && sec === env.ROSTER_READ_SECRET) || (env.INTERNAL_AUDIT_SECRET && sec === env.INTERNAL_AUDIT_SECRET));
   if (!ok) return json({ error: "Forbidden" }, 403);
   const clients = await env.DB.prepare(
-    "SELECT id, name, domain, google_ads_customer_id FROM sprint_clients WHERE archived = 0 ORDER BY name"
+    // Google Ads id: client_platform_ids (written by /client-connect) wins over the
+    // older sprint_clients column, which nothing writes any more.
+    "SELECT c.id, c.name, c.domain, COALESCE(NULLIF(p.gads_cid,''), NULLIF(c.google_ads_customer_id,'')) AS google_ads_customer_id FROM sprint_clients c LEFT JOIN client_platform_ids p ON p.client_id=c.id WHERE c.archived = 0 ORDER BY c.name"
   ).all();
   const svc = await env.DB.prepare(
     "SELECT client_id, service, status FROM client_services WHERE status = 'active'"
@@ -6508,22 +6655,39 @@ async function handleActivityIngest(request, env) {
   ).bind(clientId, clientName, tool, kind, score, summary, artifactUrl, expectedOutcome, reviewDays, occurredAt).run();
   // Routine auto-completion: if a routine step is tagged with this tool, mark the
   // client's open instances of that step Complete (best-effort; exact tool match).
-  let autoCompleted = 0;
-  if (clientId && tool) {
+  // 2026-11-12: scoped. A row closes a routine step only when it is real, current
+  // evidence: (1) the kind is not a failure/miss, (2) the work happened in the last 2
+  // days (a backfill of September must not close November's step), and (3) the step
+  // belongs to the CURRENT period's job for its template — never an older cycle.
+  // Closing a step also clears any "blocked" flag, as a manual tick does.
+  let autoCompleted = 0, autoSkipped = null;
+  const badKind = /error|fail|unknown|missed|skip|offboard/i.test(kind);
+  const stale = occurredAt && Date.parse(occurredAt.replace(" ", "T") + "Z") < Date.now() - 2 * 86400000;
+  if (clientId && tool && (badKind || stale)) autoSkipped = badKind ? "kind" : "occurred_at";
+  else if (clientId && tool) {
     try {
-      const tks = (await env.DB.prepare("SELECT id FROM sprint_template_tasks WHERE tool_key!='' AND LOWER(tool_key)=LOWER(?)").bind(tool).all()).results;
-      if (tks.length) {
-        const ids = tks.map((r) => r.id);
+      const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
+      const cand = (await env.DB.prepare(
+        `SELECT st.id, rg.period_key, tm.cadence FROM sprint_tasks st
+           JOIN sprint_template_tasks tt ON tt.id=st.task_id AND tt.tool_key!='' AND LOWER(tt.tool_key)=LOWER(?)
+           JOIN routine_generation rg ON rg.job_id=st.job_id
+           JOIN sprint_templates tm ON tm.id=rg.template_id
+          WHERE st.status!='Complete' AND (st.client_id=? OR (st.client_id=? AND tm.applies_when='firm'))`
+      ).bind(tool, clientId, (await routineFirmClientId(env)) || "").all()).results || [];
+      const ids = cand.filter((r) => r.period_key === routinePeriodKey(r.cadence, today)).map((r) => r.id);
+      if (ids.length) {
         const ph = ids.map(() => "?").join(",");
         const upd = await env.DB.prepare(
-          `UPDATE sprint_tasks SET status='Complete', completed_date=date('now'), updated_at=date('now') WHERE client_id=? AND status!='Complete' AND task_id IN (${ph})`
-        ).bind(clientId, ...ids).run();
+          `UPDATE sprint_tasks SET status='Complete', completed_date=date('now'), updated_at=date('now'), blocked_by=NULL, blocked_reason=NULL, blocked_at=NULL WHERE id IN (${ph})`
+        ).bind(...ids).run();
         autoCompleted = upd.meta?.changes || 0;
       }
     } catch (e) {
+      console.error("Activity auto-complete failed:", e);
+      autoSkipped = "error: " + String(e && e.message || e);
     }
   }
-  return json({ ok: true, id: ins.meta?.last_row_id ?? null, resolved, auto_completed: autoCompleted });
+  return json({ ok: true, id: ins.meta?.last_row_id ?? null, resolved, auto_completed: autoCompleted, auto_skipped: autoSkipped });
 }
 __name(handleActivityIngest, "handleActivityIngest");
 // Manual changelog entry: a dated change that never came up in a meeting or email.

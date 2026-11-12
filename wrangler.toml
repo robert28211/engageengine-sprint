@@ -6,3 +6,8 @@ compatibility_date = "2026-06-08"
 binding = "DB"
 database_name = "command-center"
 database_id = "13f98f2a-574d-495c-acd7-4f8900acd036"
+
+# Daily run: Gmail poll + Routine engine (reaper, then generation). Was set only in the
+# Cloudflare dashboard until 2026-11-12; pinned here so a deploy can't drift it.
+[triggers]
+crons = ["0 10 * * *"]

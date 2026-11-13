@@ -172,7 +172,9 @@ var ROUTES = [
   { method: "POST", re: /^\/api\/verdicts\/approve-client$/, handler: handleVerdictApproveClient },
   { method: "POST", re: /^\/api\/verdicts\/([0-9]+)\/approve$/, handler: (r, e, m) => handleVerdictApprove(r, e, m[1]) },
   { method: "POST", re: /^\/api\/internal\/verdicts\/propose$/, handler: handleVerdictPropose, public: true },
-  { method: "GET", re: /^\/api\/internal\/verdicts\/state$/, handler: handleVerdictState, public: true }
+  { method: "GET", re: /^\/api\/internal\/verdicts\/state$/, handler: handleVerdictState, public: true },
+  { method: "POST", re: /^\/api\/warning-signs$/, handler: handleWarningCreate },
+  { method: "POST", re: /^\/api\/warning-signs\/([0-9]+)\/resolve$/, handler: (r, e, m) => handleWarningResolve(r, e, m[1]) }
 ];
 async function handleLogin(request, env) {
   const body = await request.json().catch(() => ({}));
@@ -2816,6 +2818,15 @@ body{padding-bottom:80px}
 .vd-overdue{background:var(--surface);border:1px solid #b64400;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px}
 .vd-overdue div{margin-top:3px;color:var(--text-dim)}
 @media (max-width:640px){.vd-row{grid-template-columns:1fr}.vd-acts{justify-content:flex-start}}
+.vd-done{font-size:12px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+.vd-missing{font-size:12px;color:#b64400;margin-top:4px}
+.vd-signs{background:var(--surface);border:1px solid var(--text);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px}
+.vd-sign{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}
+.vd-sign .vd-meta{margin:0}
+.vd-warn{border-left:3px solid #b64400}
+.vd-log{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)}
+.vd-log select,.vd-log input{font:inherit;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text)}
+.vd-log input{flex:1;min-width:160px}
 </style>
 </head>
 <body>
@@ -3056,6 +3067,8 @@ document.addEventListener('click', function(e) {
   else if (act === 'vd-approve-client') { el.disabled = true; vdApproveClient(id); }
   else if (act === 'vd-change') { var vdp = document.getElementById('vdEdit' + id); if (vdp) vdp.classList.toggle('hidden'); }
   else if (act === 'vd-approve-changed') { el.disabled = true; vdApproveChanged(id); }
+  else if (act === 'vd-sign-log') { vdSignLog(id); }
+  else if (act === 'vd-sign-resolve') { vdSignResolve(id); }
   else if (act === 'allwork-tab') { switchAllWorkTab(val); }
   else if (act === 'allwork-goto-client') { switchMode('jobs'); loadClient(id); }
   else if (act === 'allwork-job-complete') { completeAllWorkJob(id); }
@@ -6191,7 +6204,17 @@ function renderVerdicts(){
   h+='<div class="vd-stat"><b>'+(s.approved||0)+'</b>approved this month</div>';
   h+='<div class="vd-stat"><b>'+(s.none||0)+'</b>no verdicts yet</div>';
   h+='<div class="vd-stat"><b>'+(s.with_line||0)+'</b>with a success line</div>';
+  h+='<div class="vd-stat"><b>'+(s.complete||0)+'</b>month complete</div>';
+  h+='<div class="vd-stat"><b>'+(s.warning_clients||0)+'</b>with warning signs</div>';
   h+='</div>';
+  var sg=d.signs||[];
+  if(sg.length){
+    h+='<div class="vd-signs"><b>Open warning signs ('+sg.length+')</b>';
+    for(var w=0;w<sg.length;w++){var g=sg[w];
+      h+='<div class="vd-sign"><span>'+esc(g.client_name)+' &middot; '+esc(g.label)+(g.note?' &middot; '+esc(g.note):'')+'</span><span class="vd-meta">'+esc(g.noted_on)+(g.source==='auto'?' &middot; from verdicts':'')+'</span>';
+      h+='<button class="vd-btn" data-action="vd-sign-resolve" data-id="'+g.id+'">Resolved</button></div>';}
+    h+='</div>';
+  }
   var od=d.overdue||[];
   if(od.length){
     h+='<div class="vd-overdue"><b>Recheck date passed, no newer verdict ('+od.length+')</b>';
@@ -6201,11 +6224,14 @@ function renderVerdicts(){
   var cs=d.clients||[];
   for(var k=0;k<cs.length;k++){
     var c=cs[k];
-    h+='<div class="vd-card vd-'+esc(c.state)+'"><div class="vd-card-head"><div class="vd-name">'+esc(c.name)+'</div>';
+    h+='<div class="vd-card vd-'+esc(c.state)+((c.signs&&c.signs.length)?' vd-warn':'')+'"><div class="vd-card-head"><div class="vd-name">'+esc(c.name)+'</div>';
     var st=c.state==='waiting'?(c.proposed+' waiting'+(c.approved?(', '+c.approved+' approved'):'')):(c.state==='approved'?(c.approved+' approved'):'No verdicts proposed yet');
     h+='<div class="vd-state">'+esc(st)+'</div>';
+    if(c.complete)h+='<span class="vd-done">Month complete</span>';
     if(c.proposed)h+='<button class="vd-btn vd-primary" data-action="vd-approve-client" data-id="'+esc(c.id)+'">Approve all '+c.proposed+'</button>';
     h+='</div>';
+    if(!c.complete&&c.missing&&c.missing.length)h+='<div class="vd-missing">Still needed this month: '+esc(c.missing.join(', '))+'</div>';
+    if(c.signs&&c.signs.length)h+='<div class="vd-missing">'+c.signs.length+' open warning sign'+(c.signs.length>1?'s':'')+(c.signs_recent>=2?' &middot; call the decision-maker':'')+'</div>';
     if(c.line){
       h+='<div class="vd-line">'+esc(c.line.line_text)+'</div>';
       h+='<div class="vd-cpl">Approved bar '+vdMoney(c.line.cpl_bar)+' per call or form &middot; benchmark '+vdMoney(c.line.benchmark_value)+(c.line.open_questions?' &middot; open: '+esc(c.line.open_questions):'')+'</div>';
@@ -6216,6 +6242,11 @@ function renderVerdicts(){
     var cp=lr&&lr.metrics&&lr.metrics.cpl;
     if(cp&&cp.actual){h+='<div class="vd-cpl">Cost per call or form this month: what it is '+vdMoney(cp.actual)+' &middot; benchmark '+vdMoney(cp.benchmark)+' &middot; approved bar '+vdMoney(cp.approved_bar)+' &middot; suggested bar '+vdMoney(cp.suggested_bar)+'</div>';}
     for(var r=0;r<c.rows.length;r++){h+=vdRowHtml(c.rows[r]);}
+    h+='<div class="vd-log"><select id="vdSign'+esc(c.id)+'"><option value="">Log a warning sign...</option>';
+    var lab=d.sign_labels||{};
+    for(var key in lab){if(key==='line_behind'||key==='count_untrusted')continue;h+='<option value="'+key+'">'+esc(lab[key])+'</option>';}
+    h+='</select><input type="text" id="vdSignNote'+esc(c.id)+'" placeholder="What happened (optional)">';
+    h+='<button class="vd-btn" data-action="vd-sign-log" data-id="'+esc(c.id)+'">Log</button></div>';
     h+='</div>';
   }
   if(!cs.length)h+='<div class="loading">No clients on the Routine.</div>';
@@ -6227,6 +6258,16 @@ async function vdPost(url,body){
   var j=await res.json().catch(function(){return {};});
   if(!res.ok){alert(j.error||'Failed');return null;}
   return j;
+}
+async function vdSignLog(cid){
+  var sel=document.getElementById('vdSign'+cid),nt=document.getElementById('vdSignNote'+cid);
+  if(!sel||!sel.value){alert('Pick a warning sign first.');return;}
+  var j=await vdPost('/api/warning-signs',{client_id:cid,sign:sel.value,note:nt?nt.value.trim():''});
+  if(j){if(j.job_created)alert('Second warning sign in 60 days: a call-the-decision-maker job was added.');loadVerdicts();}
+}
+async function vdSignResolve(id){
+  var why=prompt('How was it resolved? (optional)')||'';
+  if(await vdPost('/api/warning-signs/'+id+'/resolve',{resolution:why}))loadVerdicts();
 }
 async function vdApprove(id){if(await vdPost('/api/verdicts/'+id+'/approve',{}))loadVerdicts();}
 async function vdApproveClient(cid){if(await vdPost('/api/verdicts/approve-client',{client_id:cid,period:vdPeriod}))loadVerdicts();}
@@ -6973,6 +7014,147 @@ __name(verdictAllowed, "verdictAllowed");
 var isPeriod = /* @__PURE__ */ __name((p) => /^\d{4}-\d{2}$/.test(p || ""), "isPeriod");
 var isDay = /* @__PURE__ */ __name((d) => /^\d{4}-\d{2}-\d{2}$/.test(d || ""), "isDay");
 var asText = /* @__PURE__ */ __name((v, n = 2e3) => v == null ? null : (typeof v === "string" ? v : JSON.stringify(v)).slice(0, n), "asText");
+// ── build 4 (2026-11-13): the month is owed work, and warning signs ──
+// Services whose verdict the month cannot close without. Meta and the website are
+// not required: the report harness does not judge them yet (see verdicts.py).
+var VERDICT_REQUIRED = { gads: { label: "Google Ads", match: (k) => k.startsWith("gads:") },
+  gbp: { label: "Business Profile", match: (k) => k === "gbp" || k.startsWith("gbp:") },
+  seo: { label: "SEO", match: (k) => k === "seo" } };
+var WARNING_SIGNS = {
+  line_behind: "Success line behind two months running",
+  count_untrusted: "Tracking cannot be trusted for a second month",
+  cut_pause_cancel: "Asked to cut, pause or cancel",
+  bill_or_late: "Questioned a bill or paid late",
+  other_agency: "Another agency in the picture",
+  silence: "No answer to the monthly question two months running",
+  leads_wrong: "Says the leads are wrong or not answered on their side"
+};
+function verdictCoverage(rows, activeServices) {
+  const live = rows.filter((r) => r.status !== "superseded");
+  const approvedKeys = live.filter((r) => r.status === "approved").map((r) => r.subject_key);
+  const missing = [];
+  if (!approvedKeys.includes("line")) missing.push("Success line");
+  for (const s of activeServices) {
+    const req = VERDICT_REQUIRED[s];
+    if (req && !approvedKeys.some(req.match)) missing.push(req.label);
+  }
+  const proposed = live.filter((r) => r.status === "proposed").length;
+  return { missing, proposed, complete: !missing.length && !proposed };
+}
+__name(verdictCoverage, "verdictCoverage");
+async function activeServicesFor(env, clientIds) {
+  const out = {};
+  if (!clientIds.length) return out;
+  const ph = clientIds.map(() => "?").join(",");
+  const rs = await env.DB.prepare(`SELECT client_id, service FROM client_services WHERE status = 'active' AND client_id IN (${ph})`).bind(...clientIds).all();
+  for (const r of rs.results || []) (out[r.client_id] = out[r.client_id] || []).push(r.service);
+  return out;
+}
+__name(activeServicesFor, "activeServicesFor");
+async function notifyRobbie(env, text) {
+  if (!env.NOTIFY_KEY) return false;
+  try {
+    const r = await fetch("https://ee-notify.robertlbutt.workers.dev/send", { method: "POST",
+      headers: { "Content-Type": "application/json", "x-notify-key": env.NOTIFY_KEY, "User-Agent": "engageengine-sprint" },
+      body: JSON.stringify({ text: String(text).slice(0, 3e3), source: "sprint-verdicts" }) });
+    return r.ok;
+  } catch { return false; }
+}
+__name(notifyRobbie, "notifyRobbie");
+// After any approval: close the month's Routine step when the month is complete,
+// record the two signs the verdicts themselves reveal, then evaluate warnings.
+async function afterVerdictApproval(env, clientId, period) {
+  const out = { step_closed: 0, signs_added: [] };
+  const rows = (await env.DB.prepare("SELECT subject_key, status FROM client_verdicts WHERE client_id = ? AND period = ?").bind(clientId, period).all()).results || [];
+  const svc = (await activeServicesFor(env, [clientId]))[clientId] || [];
+  const cov = verdictCoverage(rows, svc);
+  out.coverage = cov;
+  if (cov.complete && period === new Date().toISOString().slice(0, 7)) {
+    const sec = env.SESSION_LOG_SECRET || env.INTERNAL_AUDIT_SECRET || env.ROSTER_READ_SECRET;
+    if (sec) {
+      const res = await handleActivityIngest(new Request("https://internal/api/internal/activity", { method: "POST",
+        headers: { "Content-Type": "application/json", "X-Internal-Secret": sec },
+        body: JSON.stringify({ tool: "verdicts", kind: "approved", client_id: clientId, summary: `Step 4 verdicts approved for ${period}` }) }), env);
+      out.step_closed = (await res.json().catch(() => ({}))).auto_completed || 0;
+    }
+  }
+  // auto signs, from the two most recent months that have approved verdicts
+  const hist = (await env.DB.prepare("SELECT period, subject_type, verdict FROM client_verdicts WHERE client_id = ? AND status = 'approved' ORDER BY period DESC").bind(clientId).all()).results || [];
+  const periods = [...new Set(hist.map((h) => h.period))].slice(0, 2);
+  if (periods.length === 2) {
+    const linePer = (p) => (hist.find((h) => h.period === p && h.subject_type === "line") || {}).verdict;
+    const tracking = (p) => hist.some((h) => h.period === p && h.verdict === "fix_tracking");
+    const auto = [];
+    if (linePer(periods[0]) === "behind" && linePer(periods[1]) === "behind") auto.push("line_behind");
+    if (tracking(periods[0]) && tracking(periods[1])) auto.push("count_untrusted");
+    for (const s of auto) {
+      const r = await env.DB.prepare("INSERT OR IGNORE INTO client_warning_signs (client_id, sign, period, note, source, created_by) VALUES (?, ?, ?, ?, 'auto', 'verdicts')")
+        .bind(clientId, s, periods[0], `From approved verdicts, ${periods[1]} and ${periods[0]}`).run();
+      if (r.meta?.changes) out.signs_added.push(s);
+    }
+  }
+  if (out.signs_added.length) out.warnings = await evaluateWarnings(env, clientId);
+  return out;
+}
+__name(afterVerdictApproval, "afterVerdictApproval");
+// One open sign: Robbie is told (WhatsApp via ee-notify, and the Verdicts tab).
+// Two within 60 days: a "call the decision-maker" job, once, until it is done.
+async function evaluateWarnings(env, clientId) {
+  const client = await env.DB.prepare("SELECT id, name FROM sprint_clients WHERE id = ?").bind(clientId).first();
+  if (!client) return { open: 0 };
+  const open = (await env.DB.prepare("SELECT id, sign, noted_on, note, notified_at FROM client_warning_signs WHERE client_id = ? AND status = 'open' AND noted_on >= date('now', '-60 days') ORDER BY noted_on").bind(clientId).all()).results || [];
+  const res = { open: open.length, job_created: null, notified: false };
+  const fresh = open.filter((s) => !s.notified_at);
+  if (!fresh.length) return res;
+  if (open.length >= 2) {
+    const existing = await env.DB.prepare("SELECT id FROM sprint_jobs WHERE client_id = ? AND type = 'warning-call' AND status != 'Complete' LIMIT 1").bind(clientId).first();
+    if (!existing) {
+      const jobId = genId("job");
+      const due = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+      const list = open.map((s) => `${WARNING_SIGNS[s.sign] || s.sign} (${s.noted_on})`).join("; ");
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO sprint_jobs (id, client_id, name, type, status, notes, assigned_to, due_date, created_at, updated_at) VALUES (?, ?, ?, 'warning-call', 'Active', ?, 'Robbie', ?, date('now'), date('now'))")
+          .bind(jobId, clientId, `Call the decision-maker: ${client.name}`, `Two warning signs within 60 days: ${list}`, due),
+        env.DB.prepare("INSERT INTO sprint_tasks (id, job_id, client_id, task_id, notes, status, assigned_to, due_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'Not Started', 'Robbie', ?, date('now'), date('now'))")
+          .bind(genId("task"), jobId, clientId, `warning-call-${jobId}`, `Call the person who signs and pays (not the day-to-day contact) within a week. Signs: ${list}`, due)
+      ]);
+      res.job_created = jobId;
+    }
+  }
+  const lines = fresh.map((s) => `- ${WARNING_SIGNS[s.sign] || s.sign}${s.note ? ": " + s.note : ""}`).join("\n");
+  const head = open.length >= 2
+    ? `WARNING: ${client.name} has ${open.length} warning signs in 60 days. Call the decision-maker within a week (task added in the Tracker).`
+    : `Warning sign: ${client.name}.`;
+  res.notified = await notifyRobbie(env, `${head}\n${lines}\nsprint.engageengine.cc → Verdicts`);
+  if (res.notified) {
+    const ph = fresh.map(() => "?").join(",");
+    await env.DB.prepare(`UPDATE client_warning_signs SET notified_at = datetime('now') WHERE id IN (${ph})`).bind(...fresh.map((s) => s.id)).run();
+  }
+  return res;
+}
+__name(evaluateWarnings, "evaluateWarnings");
+async function handleWarningCreate(request, env) {
+  const b = await request.json().catch(() => ({}));
+  if (!b.client_id || !WARNING_SIGNS[b.sign]) return json({ error: "client_id and a known sign required", signs: Object.keys(WARNING_SIGNS) }, 400);
+  if (b.sign === "line_behind" || b.sign === "count_untrusted") return json({ error: "that sign is detected from approved verdicts, not logged by hand" }, 400);
+  const day = b.noted_on || new Date().toISOString().slice(0, 10);
+  if (!isDay(day)) return json({ error: "noted_on must be YYYY-MM-DD" }, 400);
+  const c = await env.DB.prepare("SELECT id FROM sprint_clients WHERE id = ? AND archived = 0").bind(String(b.client_id)).first();
+  if (!c) return json({ error: "unknown or archived client" }, 404);
+  const r = await env.DB.prepare("INSERT INTO client_warning_signs (client_id, sign, noted_on, note, source, created_by) VALUES (?, ?, ?, ?, 'manual', 'tracker')")
+    .bind(c.id, b.sign, day, b.note ? String(b.note).slice(0, 500) : null).run();
+  const ev = await evaluateWarnings(env, c.id);
+  return json({ ok: true, id: r.meta?.last_row_id || null, ...ev });
+}
+__name(handleWarningCreate, "handleWarningCreate");
+async function handleWarningResolve(request, env, id) {
+  const b = await request.json().catch(() => ({}));
+  const r = await env.DB.prepare("UPDATE client_warning_signs SET status = 'resolved', resolved_on = date('now'), resolution = ? WHERE id = ? AND status = 'open'")
+    .bind(b.resolution ? String(b.resolution).slice(0, 500) : null, id).run();
+  if (!r.meta?.changes) return json({ error: "not found or already resolved" }, 404);
+  return json({ ok: true });
+}
+__name(handleWarningResolve, "handleWarningResolve");
 async function handleVerdictBoard(request, env) {
   const url = new URL(request.url);
   const period = url.searchParams.get("period") || new Date().toISOString().slice(0, 7);
@@ -6998,18 +7180,28 @@ async function handleVerdictBoard(request, env) {
     const ex = await env.DB.prepare(`SELECT id, name FROM sprint_clients WHERE id IN (${ph})`).bind(...extra).all();
     all = all.concat(ex.results || []);
   }
+  const svcBy = await activeServicesFor(env, all.map((c) => c.id));
+  const signs = (await env.DB.prepare("SELECT w.id, w.client_id, c.name AS client_name, w.sign, w.period, w.noted_on, w.note, w.source, w.notified_at FROM client_warning_signs w JOIN sprint_clients c ON c.id = w.client_id WHERE w.status = 'open' AND c.archived = 0 ORDER BY w.noted_on DESC").all()).results || [];
+  const signsBy = {};
+  for (const w of signs) { w.label = WARNING_SIGNS[w.sign] || w.sign; (signsBy[w.client_id] = signsBy[w.client_id] || []).push(w); }
   const out = all.map((c) => {
     const rs = rowsBy[c.id] || [];
     const proposed = rs.filter((r) => r.status === "proposed").length;
     const approved = rs.filter((r) => r.status === "approved").length;
+    const cov = verdictCoverage(rs, svcBy[c.id] || []);
+    const ws = signsBy[c.id] || [];
+    const recent = ws.filter((w) => w.noted_on >= new Date(Date.now() - 60 * 864e5).toISOString().slice(0, 10)).length;
     return { id: c.id, name: c.name, line: lineBy[c.id] || null, rows: rs, proposed, approved,
+      missing: cov.missing, complete: cov.complete, signs: ws, signs_recent: recent,
       state: proposed ? "waiting" : approved ? "approved" : "none" };
   });
   const rank = { waiting: 0, approved: 1, none: 2 };
   out.sort((a, b) => rank[a.state] - rank[b.state] || a.name.localeCompare(b.name));
   const count = (s) => out.filter((c) => c.state === s).length;
   return json({ period, summary: { clients: out.length, waiting: count("waiting"), approved: count("approved"), none: count("none"),
-    with_line: out.filter((c) => c.line).length }, clients: out, overdue: overdue.results || [] });
+    with_line: out.filter((c) => c.line).length, complete: out.filter((c) => c.complete).length,
+    warning_clients: out.filter((c) => c.signs.length).length }, clients: out, overdue: overdue.results || [],
+    signs: signs, sign_labels: WARNING_SIGNS });
 }
 __name(handleVerdictBoard, "handleVerdictBoard");
 async function handleVerdictApprove(request, env, id) {
@@ -7025,7 +7217,8 @@ async function handleVerdictApprove(request, env, id) {
   const changed = verdict !== row.verdict || recheck !== row.recheck_date || reason !== row.reason || action !== row.action;
   if (!changed) {
     const r = await env.DB.prepare("UPDATE client_verdicts SET status = 'approved', approved_by = ?, approved_at = datetime('now') WHERE id = ? AND status = 'proposed'").bind(by, id).run();
-    return json({ ok: true, id: Number(id), changed: false, updated: r.meta?.changes || 0 });
+    const after2 = r.meta?.changes ? await afterVerdictApproval(env, row.client_id, row.period) : null;
+    return json({ ok: true, id: Number(id), changed: false, updated: r.meta?.changes || 0, after: after2 });
   }
   if (!verdictAllowed(row.subject_type, verdict)) return json({ error: `verdict '${verdict}' not allowed for ${row.subject_type}` }, 400);
   if (!isDay(recheck)) return json({ error: "recheck_date must be YYYY-MM-DD" }, 400);
@@ -7034,7 +7227,8 @@ async function handleVerdictApprove(request, env, id) {
     env.DB.prepare("UPDATE client_verdicts SET status = 'superseded' WHERE id = ? AND status = 'proposed'").bind(id),
     env.DB.prepare("INSERT INTO client_verdicts (client_id, period, subject_type, subject_key, subject_name, verdict, reason, action, window_start, window_end, metrics, provenance, recheck_date, status, approved_by, approved_at, note, supersedes_id, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'approved', ?, datetime('now'), ?, ?, 'tracker')").bind(row.client_id, row.period, row.subject_type, row.subject_key, row.subject_name, verdict, reason, action, row.window_start, row.window_end, row.metrics, row.provenance, recheck, by, note, row.id)
   ]);
-  return json({ ok: true, id: Number(id), changed: true, new_id: res[1].meta?.last_row_id || null });
+  const after = await afterVerdictApproval(env, row.client_id, row.period);
+  return json({ ok: true, id: Number(id), changed: true, new_id: res[1].meta?.last_row_id || null, after });
 }
 __name(handleVerdictApprove, "handleVerdictApprove");
 async function handleVerdictApproveClient(request, env) {
@@ -7042,7 +7236,8 @@ async function handleVerdictApproveClient(request, env) {
   if (!body.client_id || !isPeriod(body.period)) return json({ error: "client_id and period (YYYY-MM) required" }, 400);
   const by = String(body.approved_by || "Robbie").slice(0, 40);
   const r = await env.DB.prepare("UPDATE client_verdicts SET status = 'approved', approved_by = ?, approved_at = datetime('now') WHERE client_id = ? AND period = ? AND status = 'proposed'").bind(by, String(body.client_id), body.period).run();
-  return json({ ok: true, approved: r.meta?.changes || 0 });
+  const after = r.meta?.changes ? await afterVerdictApproval(env, String(body.client_id), body.period) : null;
+  return json({ ok: true, approved: r.meta?.changes || 0, after });
 }
 __name(handleVerdictApproveClient, "handleVerdictApproveClient");
 async function handleVerdictPropose(request, env) {

@@ -165,7 +165,14 @@ var ROUTES = [
   { method: "PATCH", re: /^\/api\/clients\/([^/]+)\/maintenance$/, handler: (r, e, m) => handleClientMaintenance(r, e, m[1]) },
   { method: "PATCH", re: /^\/api\/clients\/([^/]+)\/domain$/, handler: (r, e, m) => handleClientDomain(r, e, m[1]) },
   // Client Health
-  { method: "GET", re: /^\/api\/client-health$/, handler: handleClientHealth }
+  { method: "GET", re: /^\/api\/client-health$/, handler: handleClientHealth },
+  // Client Success Process, step 4 verdicts (2026-11-13). Board + approvals are
+  // session gated; the report harness proposes and reads state with X-Internal-Secret.
+  { method: "GET", re: /^\/api\/verdicts$/, handler: handleVerdictBoard },
+  { method: "POST", re: /^\/api\/verdicts\/approve-client$/, handler: handleVerdictApproveClient },
+  { method: "POST", re: /^\/api\/verdicts\/([0-9]+)\/approve$/, handler: (r, e, m) => handleVerdictApprove(r, e, m[1]) },
+  { method: "POST", re: /^\/api\/internal\/verdicts\/propose$/, handler: handleVerdictPropose, public: true },
+  { method: "GET", re: /^\/api\/internal\/verdicts\/state$/, handler: handleVerdictState, public: true }
 ];
 async function handleLogin(request, env) {
   const body = await request.json().catch(() => ({}));
@@ -2778,6 +2785,37 @@ body{padding-bottom:80px}
 .rt-task-notes{font-size:13px;line-height:1.4;flex:1}
 .rt-task.done .rt-task-notes{color:var(--text-muted);text-decoration:line-through}
 .rt-task-who{font-size:11px;font-weight:700;color:var(--accent);background:var(--accent-glow);padding:2px 7px;border-radius:20px;flex-shrink:0}
+.vd-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px}
+.vd-month{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600}
+.vd-sub{font-size:13px;color:var(--text-dim);margin-bottom:14px}
+.vd-sum{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+.vd-stat{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--text-dim)}
+.vd-stat b{display:block;font-size:18px;color:var(--text)}
+.vd-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:12px}
+.vd-card.vd-none{opacity:.7}
+.vd-card-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.vd-name{font-weight:700;font-size:15px;flex:1;min-width:160px}
+.vd-state{font-size:12px;color:var(--text-dim)}
+.vd-line{font-size:13px;margin:8px 0 2px;color:var(--text)}
+.vd-cpl{font-size:12px;color:var(--text-dim);margin-bottom:6px}
+.vd-row{border-top:1px solid var(--border);padding:10px 0;display:grid;grid-template-columns:minmax(140px,220px) 1fr auto;gap:6px 14px;align-items:start}
+.vd-subj{font-size:13px;font-weight:600}
+.vd-body{font-size:13px;line-height:1.45}
+.vd-do{color:var(--text-dim);margin-top:2px}
+.vd-meta{font-size:11px;color:var(--text-dim);margin-top:4px}
+.vd-acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.vd-badge{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px;background:var(--surface2);color:var(--text);text-transform:uppercase;letter-spacing:.5px}
+.vd-badge.vd-v-keep,.vd-badge.vd-v-on_track,.vd-badge.vd-v-reached{background:var(--text);color:var(--surface)}
+.vd-badge.vd-v-kill,.vd-badge.vd-v-behind{background:#b64400;color:#fff}
+.vd-btn{font:inherit;font-size:12px;font-weight:600;padding:5px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);cursor:pointer;color:var(--text)}
+.vd-btn.vd-primary{background:var(--text);color:var(--surface);border-color:var(--text)}
+.vd-btn:disabled{opacity:.5;cursor:default}
+.vd-edit{grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap;align-items:center;background:var(--surface2);padding:8px;border-radius:6px}
+.vd-edit select,.vd-edit input{font:inherit;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text)}
+.vd-edit input.vd-note{flex:1;min-width:180px}
+.vd-overdue{background:var(--surface);border:1px solid #b64400;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px}
+.vd-overdue div{margin-top:3px;color:var(--text-dim)}
+@media (max-width:640px){.vd-row{grid-template-columns:1fr}.vd-acts{justify-content:flex-start}}
 </style>
 </head>
 <body>
@@ -2816,6 +2854,7 @@ body{padding-bottom:80px}
       <button class="mode-tab" id="modeHealthBtn" data-action="mode-health">Health</button>
       <button class="mode-tab" id="modeActivityBtn" data-action="mode-activity">Activity</button>
       <button class="mode-tab" id="modeAgentsBtn" data-action="mode-agents">Agents</button>
+      <button class="mode-tab" id="modeVerdictsBtn" data-action="mode-verdicts">Verdicts</button>
       <a class="mode-tab mode-link" href="https://command-center.robertlbutt.workers.dev/attention" target="_blank" rel="noopener" title="Who is owed a reply / no personal touch — Operations Hub">Attention ↗</a>
     </div>
   </div>
@@ -2907,6 +2946,11 @@ body{padding-bottom:80px}
 <!-- Agents mode -->
 <div id="agentsMode" class="hidden">
   <div id="agentsContent"><div class="loading">Loading...</div></div>
+</div>
+
+<!-- Verdicts mode (Client Success Process, step 4) -->
+<div id="verdictsMode" class="hidden">
+  <div id="verdictsContent"><div class="loading">Loading...</div></div>
 </div>
 
 </div><!-- /container -->
@@ -3006,6 +3050,12 @@ document.addEventListener('click', function(e) {
   else if (act === 'mode-health') { switchMode('health'); }
   else if (act === 'mode-activity') { switchMode('activity'); }
   else if (act === 'mode-agents') { switchMode('agents'); }
+  else if (act === 'mode-verdicts') { switchMode('verdicts'); }
+  else if (act === 'vd-month') { vdShift(parseInt(val, 10) || 0); }
+  else if (act === 'vd-approve') { el.disabled = true; vdApprove(id); }
+  else if (act === 'vd-approve-client') { el.disabled = true; vdApproveClient(id); }
+  else if (act === 'vd-change') { var vdp = document.getElementById('vdEdit' + id); if (vdp) vdp.classList.toggle('hidden'); }
+  else if (act === 'vd-approve-changed') { el.disabled = true; vdApproveChanged(id); }
   else if (act === 'allwork-tab') { switchAllWorkTab(val); }
   else if (act === 'allwork-goto-client') { switchMode('jobs'); loadClient(id); }
   else if (act === 'allwork-job-complete') { completeAllWorkJob(id); }
@@ -3101,6 +3151,7 @@ function switchMode(mode) {
   document.getElementById('modeHealthBtn').classList.toggle('active', mode === 'health');
   document.getElementById('modeActivityBtn').classList.toggle('active', mode === 'activity');
   document.getElementById('modeAgentsBtn').classList.toggle('active', mode === 'agents');
+  document.getElementById('modeVerdictsBtn').classList.toggle('active', mode === 'verdicts');
   document.getElementById('jobsMode').classList.toggle('hidden', mode !== 'jobs');
   document.getElementById('sprintMode').classList.toggle('hidden', mode !== 'sprint');
   document.getElementById('routineMode').classList.toggle('hidden', mode !== 'routine');
@@ -3111,6 +3162,7 @@ function switchMode(mode) {
   document.getElementById('healthMode').classList.toggle('hidden', mode !== 'health');
   document.getElementById('activityMode').classList.toggle('hidden', mode !== 'activity');
   document.getElementById('agentsMode').classList.toggle('hidden', mode !== 'agents');
+  document.getElementById('verdictsMode').classList.toggle('hidden', mode !== 'verdicts');
   document.getElementById('navBack').style.display = 'none';
   if (mode === 'jobs') {
     document.getElementById('headerStats').style.display = '';
@@ -3142,6 +3194,9 @@ function switchMode(mode) {
   } else if (mode === 'agents') {
     document.getElementById('headerStats').style.display = 'none';
     loadAgentsFeed();
+  } else if (mode === 'verdicts') {
+    document.getElementById('headerStats').style.display = 'none';
+    loadVerdicts();
   }
 }
 
@@ -6071,6 +6126,117 @@ function renderClientActivity(rows){
   wrap.innerHTML=html;
 }
 
+
+// -- Verdicts (Client Success Process, step 4; 2026-11-13) --------------------
+var vdPeriod=new Date().toISOString().slice(0,7);
+var vdData=null;
+var VD_LABEL={keep:'Keep',fix:'Fix',swerve:'Swerve',kill:'Kill',too_early:'Too early',fix_tracking:'Fix tracking',on_track:'On track',behind:'Behind',reached:'Reached',not_set:'Not set'};
+var VD_LINE=['on_track','behind','reached','not_set'];
+var VD_OTHER=['keep','fix','swerve','kill','too_early','fix_tracking'];
+function vdShift(n){var a=vdPeriod.split('-');var d=new Date(Date.UTC(Number(a[0]),Number(a[1])-1+n,1));vdPeriod=d.toISOString().slice(0,7);loadVerdicts();}
+function vdMonthName(p){var a=p.split('-');return new Date(Date.UTC(Number(a[0]),Number(a[1])-1,1)).toLocaleString('en-US',{month:'long',year:'numeric',timeZone:'UTC'});}
+function vdMoney(v){return (v===null||v===undefined||v==='')?'n/a':'$'+Number(v).toFixed(2);}
+async function loadVerdicts(){
+  var wrap=document.getElementById('verdictsContent');
+  if(!wrap)return;
+  wrap.innerHTML='<div class="loading">Loading...</div>';
+  try{
+    var res=await fetch(API+'/api/verdicts?period='+encodeURIComponent(vdPeriod));
+    if(res.status===401){showLoginScreen();return;}
+    if(!res.ok){wrap.innerHTML='<div class="loading">Failed to load verdicts.</div>';return;}
+    vdData=await res.json();
+    renderVerdicts();
+  }catch(e){wrap.innerHTML='<div class="loading">Failed to load verdicts.</div>';}
+}
+function vdRowHtml(r){
+  var choices=r.subject_type==='line'?VD_LINE:VD_OTHER;
+  var h='<div class="vd-row">';
+  h+='<div><div class="vd-subj">'+esc(r.subject_name||r.subject_key)+'</div><div class="vd-meta">'+esc(r.subject_type==='line'?'success line':r.subject_type)+'</div></div>';
+  h+='<div class="vd-body"><span class="vd-badge vd-v-'+esc(r.verdict)+'">'+esc(VD_LABEL[r.verdict]||r.verdict)+'</span>';
+  if(r.reason)h+='<div>'+esc(r.reason)+'</div>';
+  if(r.action)h+='<div class="vd-do">Do: '+esc(r.action)+'</div>';
+  var meta='Recheck '+esc(r.recheck_date||'');
+  if(r.window_start)meta+=' &middot; window '+esc(r.window_start)+' to '+esc(r.window_end||'');
+  if(r.status==='approved')meta+=' &middot; approved by '+esc(r.approved_by||'')+' '+esc((r.approved_at||'').slice(0,10));
+  if(r.note)meta+=' &middot; '+esc(r.note);
+  h+='<div class="vd-meta">'+meta+'</div></div>';
+  h+='<div class="vd-acts">';
+  if(r.status==='proposed'){
+    h+='<button class="vd-btn vd-primary" data-action="vd-approve" data-id="'+r.id+'">Approve</button>';
+    h+='<button class="vd-btn" data-action="vd-change" data-id="'+r.id+'">Change</button>';
+  }else{
+    h+='<span class="vd-meta">'+esc(r.status)+'</span>';
+  }
+  h+='</div>';
+  if(r.status==='proposed'){
+    h+='<div class="vd-edit hidden" id="vdEdit'+r.id+'"><select id="vdSel'+r.id+'">';
+    for(var i=0;i<choices.length;i++){h+='<option value="'+choices[i]+'"'+(choices[i]===r.verdict?' selected':'')+'>'+VD_LABEL[choices[i]]+'</option>';}
+    h+='</select><input type="date" id="vdDate'+r.id+'" value="'+esc(r.recheck_date||'')+'">';
+    h+='<input class="vd-note" type="text" id="vdNote'+r.id+'" placeholder="Why the change (kept with the verdict)">';
+    h+='<button class="vd-btn vd-primary" data-action="vd-approve-changed" data-id="'+r.id+'">Approve changed</button></div>';
+  }
+  h+='</div>';
+  return h;
+}
+function renderVerdicts(){
+  var wrap=document.getElementById('verdictsContent');
+  if(!wrap)return;
+  var d=vdData||{};var s=d.summary||{};
+  var h='<div class="vd-head"><div class="section-title" style="margin:0">Verdicts</div>';
+  h+='<div class="vd-month"><button class="vd-btn" data-action="vd-month" data-val="-1">&#8592;</button><span>'+esc(vdMonthName(vdPeriod))+'</span><button class="vd-btn" data-action="vd-month" data-val="1">&#8594;</button></div></div>';
+  h+='<div class="vd-sub">Step 4 of the Client Success Process. The monthly report proposes one verdict per campaign and service; you approve. Approving as Robbie.</div>';
+  h+='<div class="vd-sum">';
+  h+='<div class="vd-stat"><b>'+(s.clients||0)+'</b>clients on the Routine</div>';
+  h+='<div class="vd-stat"><b>'+(s.waiting||0)+'</b>waiting for you</div>';
+  h+='<div class="vd-stat"><b>'+(s.approved||0)+'</b>approved this month</div>';
+  h+='<div class="vd-stat"><b>'+(s.none||0)+'</b>no verdicts yet</div>';
+  h+='<div class="vd-stat"><b>'+(s.with_line||0)+'</b>with a success line</div>';
+  h+='</div>';
+  var od=d.overdue||[];
+  if(od.length){
+    h+='<div class="vd-overdue"><b>Recheck date passed, no newer verdict ('+od.length+')</b>';
+    for(var j=0;j<od.length&&j<12;j++){var o=od[j];h+='<div>'+esc(o.client_name)+' &middot; '+esc(o.subject_name)+' &middot; '+esc(VD_LABEL[o.verdict]||o.verdict)+' &middot; recheck '+esc(o.recheck_date)+'</div>';}
+    h+='</div>';
+  }
+  var cs=d.clients||[];
+  for(var k=0;k<cs.length;k++){
+    var c=cs[k];
+    h+='<div class="vd-card vd-'+esc(c.state)+'"><div class="vd-card-head"><div class="vd-name">'+esc(c.name)+'</div>';
+    var st=c.state==='waiting'?(c.proposed+' waiting'+(c.approved?(', '+c.approved+' approved'):'')):(c.state==='approved'?(c.approved+' approved'):'No verdicts proposed yet');
+    h+='<div class="vd-state">'+esc(st)+'</div>';
+    if(c.proposed)h+='<button class="vd-btn vd-primary" data-action="vd-approve-client" data-id="'+esc(c.id)+'">Approve all '+c.proposed+'</button>';
+    h+='</div>';
+    if(c.line){
+      h+='<div class="vd-line">'+esc(c.line.line_text)+'</div>';
+      h+='<div class="vd-cpl">Approved bar '+vdMoney(c.line.cpl_bar)+' per call or form &middot; benchmark '+vdMoney(c.line.benchmark_value)+(c.line.open_questions?' &middot; open: '+esc(c.line.open_questions):'')+'</div>';
+    }else if(c.rows.length){
+      h+='<div class="vd-cpl">No approved success line yet.</div>';
+    }
+    var lr=null;for(var q=0;q<c.rows.length;q++){if(c.rows[q].subject_type==='line'){lr=c.rows[q];break;}}
+    var cp=lr&&lr.metrics&&lr.metrics.cpl;
+    if(cp&&cp.actual){h+='<div class="vd-cpl">Cost per call or form this month: what it is '+vdMoney(cp.actual)+' &middot; benchmark '+vdMoney(cp.benchmark)+' &middot; approved bar '+vdMoney(cp.approved_bar)+' &middot; suggested bar '+vdMoney(cp.suggested_bar)+'</div>';}
+    for(var r=0;r<c.rows.length;r++){h+=vdRowHtml(c.rows[r]);}
+    h+='</div>';
+  }
+  if(!cs.length)h+='<div class="loading">No clients on the Routine.</div>';
+  wrap.innerHTML=h;
+}
+async function vdPost(url,body){
+  var res=await fetch(API+url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  if(res.status===401){showLoginScreen();return null;}
+  var j=await res.json().catch(function(){return {};});
+  if(!res.ok){alert(j.error||'Failed');return null;}
+  return j;
+}
+async function vdApprove(id){if(await vdPost('/api/verdicts/'+id+'/approve',{}))loadVerdicts();}
+async function vdApproveClient(cid){if(await vdPost('/api/verdicts/approve-client',{client_id:cid,period:vdPeriod}))loadVerdicts();}
+async function vdApproveChanged(id){
+  var sel=document.getElementById('vdSel'+id),dt=document.getElementById('vdDate'+id),nt=document.getElementById('vdNote'+id);
+  var body={verdict:sel?sel.value:undefined,recheck_date:dt?dt.value:undefined};
+  if(nt&&nt.value.trim())body.note=nt.value.trim();
+  if(await vdPost('/api/verdicts/'+id+'/approve',body))loadVerdicts();
+}
+
 // ── Cloud Agent Feed (engageengine-agents) ─────────────────
 var agentsFeedData=[];
 
@@ -6788,6 +6954,141 @@ async function handleActivityOutcome(request, env, activityId) {
   return json({ ok: true });
 }
 __name(handleActivityOutcome, "handleActivityOutcome");
+// ── Client Success Process: step 4 verdicts (build 3, 2026-11-13) ──────────
+// Rules: vault Projects/Client Success Process.md. Tables: db/2026-11-13_success_process.sql.
+// A row is never edited in place: a changed verdict supersedes the proposed row and a
+// new approved row points back to it (supersedes_id).
+var VERDICT_LINE = new Set(["on_track", "behind", "reached", "not_set"]);
+var VERDICT_OTHER = new Set(["keep", "fix", "swerve", "kill", "too_early", "fix_tracking"]);
+var VERDICT_TYPES = new Set(["campaign", "service", "line"]);
+function internalSecretOk(request, env) {
+  const sec = request.headers.get("X-Internal-Secret");
+  return !!sec && [env.INTERNAL_AUDIT_SECRET, env.ROSTER_READ_SECRET, env.SESSION_LOG_SECRET].some((s) => s && sec === s);
+}
+__name(internalSecretOk, "internalSecretOk");
+function verdictAllowed(type, v) {
+  return type === "line" ? VERDICT_LINE.has(v) : VERDICT_OTHER.has(v);
+}
+__name(verdictAllowed, "verdictAllowed");
+var isPeriod = /* @__PURE__ */ __name((p) => /^\d{4}-\d{2}$/.test(p || ""), "isPeriod");
+var isDay = /* @__PURE__ */ __name((d) => /^\d{4}-\d{2}-\d{2}$/.test(d || ""), "isDay");
+var asText = /* @__PURE__ */ __name((v, n = 2e3) => v == null ? null : (typeof v === "string" ? v : JSON.stringify(v)).slice(0, n), "asText");
+async function handleVerdictBoard(request, env) {
+  const url = new URL(request.url);
+  const period = url.searchParams.get("period") || new Date().toISOString().slice(0, 7);
+  if (!isPeriod(period)) return json({ error: "period must be YYYY-MM" }, 400);
+  const [clients, lines, rows, overdue] = await Promise.all([
+    env.DB.prepare("SELECT id, name FROM sprint_clients WHERE archived = 0 AND stage = 'routine' ORDER BY name").all(),
+    env.DB.prepare("SELECT id, client_id, scope, line_text, target_value, target_date, cpl_bar, cpl_lead_def, cpl_actual, benchmark_value, approved_at, open_questions FROM client_success_line WHERE status = 'approved' ORDER BY id").all(),
+    env.DB.prepare("SELECT id, client_id, subject_type, subject_key, subject_name, verdict, reason, action, window_start, window_end, metrics, recheck_date, status, approved_by, approved_at, note, supersedes_id, created_at, created_by FROM client_verdicts WHERE period = ? AND status != 'superseded' ORDER BY client_id, CASE subject_type WHEN 'line' THEN 0 WHEN 'campaign' THEN 1 ELSE 2 END, subject_name").bind(period).all(),
+    env.DB.prepare("SELECT v.client_id, c.name AS client_name, v.subject_name, v.verdict, v.period, v.recheck_date FROM client_verdicts v JOIN sprint_clients c ON c.id = v.client_id WHERE v.status = 'approved' AND v.recheck_date < date('now') AND c.archived = 0 AND NOT EXISTS (SELECT 1 FROM client_verdicts v2 WHERE v2.client_id = v.client_id AND v2.subject_key = v.subject_key AND v2.period > v.period AND v2.status != 'superseded') ORDER BY v.recheck_date").all()
+  ]);
+  const lineBy = {};
+  for (const l of lines.results || []) lineBy[l.client_id] = l;
+  const rowsBy = {};
+  for (const r of rows.results || []) {
+    try { r.metrics = r.metrics ? JSON.parse(r.metrics) : null; } catch { }
+    (rowsBy[r.client_id] = rowsBy[r.client_id] || []).push(r);
+  }
+  const known = new Set((clients.results || []).map((c) => c.id));
+  const extra = Object.keys(rowsBy).filter((id) => !known.has(id));
+  let all = clients.results || [];
+  if (extra.length) {
+    const ph = extra.map(() => "?").join(",");
+    const ex = await env.DB.prepare(`SELECT id, name FROM sprint_clients WHERE id IN (${ph})`).bind(...extra).all();
+    all = all.concat(ex.results || []);
+  }
+  const out = all.map((c) => {
+    const rs = rowsBy[c.id] || [];
+    const proposed = rs.filter((r) => r.status === "proposed").length;
+    const approved = rs.filter((r) => r.status === "approved").length;
+    return { id: c.id, name: c.name, line: lineBy[c.id] || null, rows: rs, proposed, approved,
+      state: proposed ? "waiting" : approved ? "approved" : "none" };
+  });
+  const rank = { waiting: 0, approved: 1, none: 2 };
+  out.sort((a, b) => rank[a.state] - rank[b.state] || a.name.localeCompare(b.name));
+  const count = (s) => out.filter((c) => c.state === s).length;
+  return json({ period, summary: { clients: out.length, waiting: count("waiting"), approved: count("approved"), none: count("none"),
+    with_line: out.filter((c) => c.line).length }, clients: out, overdue: overdue.results || [] });
+}
+__name(handleVerdictBoard, "handleVerdictBoard");
+async function handleVerdictApprove(request, env, id) {
+  const body = await request.json().catch(() => ({}));
+  const row = await env.DB.prepare("SELECT * FROM client_verdicts WHERE id = ?").bind(id).first();
+  if (!row) return json({ error: "Not found" }, 404);
+  if (row.status !== "proposed") return json({ error: `already ${row.status}` }, 409);
+  const by = String(body.approved_by || "Robbie").slice(0, 40);
+  const verdict = body.verdict || row.verdict;
+  const recheck = body.recheck_date || row.recheck_date;
+  const reason = body.reason != null && String(body.reason).trim() ? String(body.reason).trim() : row.reason;
+  const action = body.action != null && String(body.action).trim() ? String(body.action).trim() : row.action;
+  const changed = verdict !== row.verdict || recheck !== row.recheck_date || reason !== row.reason || action !== row.action;
+  if (!changed) {
+    const r = await env.DB.prepare("UPDATE client_verdicts SET status = 'approved', approved_by = ?, approved_at = datetime('now') WHERE id = ? AND status = 'proposed'").bind(by, id).run();
+    return json({ ok: true, id: Number(id), changed: false, updated: r.meta?.changes || 0 });
+  }
+  if (!verdictAllowed(row.subject_type, verdict)) return json({ error: `verdict '${verdict}' not allowed for ${row.subject_type}` }, 400);
+  if (!isDay(recheck)) return json({ error: "recheck_date must be YYYY-MM-DD" }, 400);
+  const note = String(body.note || `Changed at approval from ${row.verdict}`).slice(0, 500);
+  const res = await env.DB.batch([
+    env.DB.prepare("UPDATE client_verdicts SET status = 'superseded' WHERE id = ? AND status = 'proposed'").bind(id),
+    env.DB.prepare("INSERT INTO client_verdicts (client_id, period, subject_type, subject_key, subject_name, verdict, reason, action, window_start, window_end, metrics, provenance, recheck_date, status, approved_by, approved_at, note, supersedes_id, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'approved', ?, datetime('now'), ?, ?, 'tracker')").bind(row.client_id, row.period, row.subject_type, row.subject_key, row.subject_name, verdict, reason, action, row.window_start, row.window_end, row.metrics, row.provenance, recheck, by, note, row.id)
+  ]);
+  return json({ ok: true, id: Number(id), changed: true, new_id: res[1].meta?.last_row_id || null });
+}
+__name(handleVerdictApprove, "handleVerdictApprove");
+async function handleVerdictApproveClient(request, env) {
+  const body = await request.json().catch(() => ({}));
+  if (!body.client_id || !isPeriod(body.period)) return json({ error: "client_id and period (YYYY-MM) required" }, 400);
+  const by = String(body.approved_by || "Robbie").slice(0, 40);
+  const r = await env.DB.prepare("UPDATE client_verdicts SET status = 'approved', approved_by = ?, approved_at = datetime('now') WHERE client_id = ? AND period = ? AND status = 'proposed'").bind(by, String(body.client_id), body.period).run();
+  return json({ ok: true, approved: r.meta?.changes || 0 });
+}
+__name(handleVerdictApproveClient, "handleVerdictApproveClient");
+async function handleVerdictPropose(request, env) {
+  if (!internalSecretOk(request, env)) return json({ error: "Unauthorized" }, 401);
+  const body = await request.json().catch(() => ({}));
+  const cid = body.client_id && String(body.client_id);
+  const period = body.period;
+  const rows = Array.isArray(body.rows) ? body.rows : [];
+  if (!cid || !isPeriod(period) || !rows.length) return json({ error: "client_id, period (YYYY-MM) and rows required" }, 400);
+  const client = await env.DB.prepare("SELECT id FROM sprint_clients WHERE id = ? AND archived = 0").bind(cid).first();
+  if (!client) return json({ error: "unknown or archived client" }, 404);
+  const bad = [];
+  for (const [i, r] of rows.entries()) {
+    if (!VERDICT_TYPES.has(r.subject_type) || !r.subject_key || !verdictAllowed(r.subject_type, r.verdict) || !isDay(r.recheck_date))
+      bad.push(i);
+  }
+  if (bad.length) return json({ error: "invalid rows", rows: bad }, 400);
+  const live = await env.DB.prepare("SELECT id, subject_key, status FROM client_verdicts WHERE client_id = ? AND period = ? AND status != 'superseded'").bind(cid, period).all();
+  const byKey = {};
+  for (const l of live.results || []) byKey[l.subject_key] = l;
+  const by = String(body.created_by || "full_report").slice(0, 40);
+  const stmts = [];
+  const kept = [];
+  let replaced = 0;
+  for (const r of rows) {
+    const ex = byKey[r.subject_key];
+    if (ex && ex.status === "approved") { kept.push(r.subject_key); continue; }
+    if (ex) { stmts.push(env.DB.prepare("UPDATE client_verdicts SET status = 'superseded' WHERE id = ?").bind(ex.id)); replaced++; }
+    stmts.push(env.DB.prepare("INSERT INTO client_verdicts (client_id, period, subject_type, subject_key, subject_name, verdict, reason, action, window_start, window_end, metrics, provenance, recheck_date, status, supersedes_id, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'proposed', ?, ?)").bind(
+      cid, period, r.subject_type, String(r.subject_key).slice(0, 200), asText(r.subject_name, 200), r.verdict, asText(r.reason), asText(r.action), r.window_start || null, r.window_end || null, asText(r.metrics, 8e3), asText(r.provenance, 2e3), r.recheck_date, ex ? ex.id : null, by));
+  }
+  if (stmts.length) await env.DB.batch(stmts);
+  return json({ ok: true, proposed: rows.length - kept.length, replaced, kept_approved: kept });
+}
+__name(handleVerdictPropose, "handleVerdictPropose");
+async function handleVerdictState(request, env) {
+  if (!internalSecretOk(request, env)) return json({ error: "Unauthorized" }, 401);
+  const cid = new URL(request.url).searchParams.get("client");
+  if (!cid) return json({ error: "client required" }, 400);
+  const [line, prior] = await Promise.all([
+    env.DB.prepare("SELECT * FROM client_success_line WHERE client_id = ? AND status = 'approved' ORDER BY id DESC LIMIT 1").bind(cid).first(),
+    env.DB.prepare("SELECT period, subject_key, verdict, metrics, status FROM client_verdicts WHERE client_id = ? AND status = 'approved' ORDER BY period DESC LIMIT 60").bind(cid).all()
+  ]);
+  return json({ line: line || null, prior: prior.results || [] });
+}
+__name(handleVerdictState, "handleVerdictState");
 export {
   worker_default as default
 };

@@ -174,6 +174,7 @@ var ROUTES = [
   { method: "POST", re: /^\/api\/internal\/verdicts\/propose$/, handler: handleVerdictPropose, public: true },
   { method: "GET", re: /^\/api\/internal\/verdicts\/state$/, handler: handleVerdictState, public: true },
   { method: "POST", re: /^\/api\/warning-signs$/, handler: handleWarningCreate },
+  { method: "GET", re: /^\/api\/verdicts\/prep\/([^/]+)$/, handler: (r, e, m) => handleVerdictPrep(r, e, decodeURIComponent(m[1])) },
   { method: "POST", re: /^\/api\/warning-signs\/([0-9]+)\/resolve$/, handler: (r, e, m) => handleWarningResolve(r, e, m[1]) }
 ];
 async function handleLogin(request, env) {
@@ -6228,6 +6229,7 @@ function renderVerdicts(){
     var st=c.state==='waiting'?(c.proposed+' waiting'+(c.approved?(', '+c.approved+' approved'):'')):(c.state==='approved'?(c.approved+' approved'):'No verdicts proposed yet');
     h+='<div class="vd-state">'+esc(st)+'</div>';
     if(c.complete)h+='<span class="vd-done">Month complete</span>';
+    h+='<a class="vd-btn" href="/api/verdicts/prep/'+encodeURIComponent(c.id)+'" target="_blank" rel="noopener">Prep sheet</a>';
     if(c.proposed)h+='<button class="vd-btn vd-primary" data-action="vd-approve-client" data-id="'+esc(c.id)+'">Approve all '+c.proposed+'</button>';
     h+='</div>';
     if(!c.complete&&c.missing&&c.missing.length)h+='<div class="vd-missing">Still needed this month: '+esc(c.missing.join(', '))+'</div>';
@@ -7155,6 +7157,49 @@ async function handleWarningResolve(request, env, id) {
   return json({ ok: true });
 }
 __name(handleWarningResolve, "handleWarningResolve");
+// Quarterly conversation prep sheet (build 5): one printable page per client for
+// Robbie's 20-minute call with the person who signs and pays.
+async function handleVerdictPrep(request, env, clientId) {
+  const e = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const c = await env.DB.prepare("SELECT id, name FROM sprint_clients WHERE id = ?").bind(clientId).first();
+  if (!c) return new Response("Client not found", { status: 404 });
+  const [line, rows, signs, calls] = await Promise.all([
+    env.DB.prepare("SELECT * FROM client_success_line WHERE client_id = ? AND status = 'approved' ORDER BY id DESC LIMIT 1").bind(clientId).first(),
+    env.DB.prepare("SELECT period, subject_type, subject_key, subject_name, verdict, reason, action, recheck_date FROM client_verdicts WHERE client_id = ? AND status = 'approved' AND period >= strftime('%Y-%m', 'now', '-2 months') ORDER BY period, subject_type, subject_name").bind(clientId).all(),
+    env.DB.prepare("SELECT sign, noted_on, note, source FROM client_warning_signs WHERE client_id = ? AND status = 'open' ORDER BY noted_on").bind(clientId).all(),
+    env.DB.prepare("SELECT name, due_date, status FROM sprint_jobs WHERE client_id = ? AND type = 'warning-call' AND status != 'Complete'").bind(clientId).all()
+  ]);
+  const rs = rows.results || [];
+  const periods = [...new Set(rs.map((r) => r.period))].sort();
+  const subjects = [];
+  for (const r of rs) if (!subjects.find((s) => s.key === r.subject_key)) subjects.push({ key: r.subject_key, name: r.subject_type === "line" ? "Success line" : r.subject_name || r.subject_key });
+  const cell = (k, p) => { const r = rs.find((x) => x.subject_key === k && x.period === p); return r ? e((r.verdict || "").replace("_", " ")) : "&middot;"; };
+  const latest = periods[periods.length - 1];
+  const now = rs.filter((r) => r.period === latest && r.subject_type !== "line");
+  const ws = signs.results || [];
+  const label = (d) => new Date(d + "-01T00:00:00Z").toLocaleString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Prep sheet: ${e(c.name)}</title><style>
+body{font-family:Arial,Helvetica,sans-serif;color:#1d1d1f;background:#fff;max-width:760px;margin:24px auto;padding:0 16px;font-size:13px;line-height:1.45}
+h1{font-size:20px;margin:0}h2{font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#707070;margin:22px 0 6px;border-bottom:1px solid #d6d6d6;padding-bottom:4px}
+.sub{color:#707070;font-size:12px}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #e3e4e5;padding:5px 6px;text-align:left;vertical-align:top}
+th{font-size:11px;color:#707070;font-weight:600}.alert{color:#b64400;font-weight:700}ol{padding-left:18px}li{margin:4px 0}
+@media print{body{margin:0}a{display:none}}</style></head><body>
+<h1>${e(c.name)}</h1><div class="sub">Quarterly conversation prep &middot; ${new Date().toISOString().slice(0, 10)} &middot; internal, not for the client</div>
+<h2>Who decides</h2><div>${line && line.decision_maker ? e(line.decision_maker) : '<span class="alert">Not recorded.</span> Find out who signs and pays; the call is with them, not the day-to-day contact.'}${line && line.day_contact ? " &middot; day-to-day: " + e(line.day_contact) : ""}</div>
+<h2>The success line</h2><div>${line ? e(line.line_text) : '<span class="alert">No approved success line.</span> Write one from the answers below.'}</div>
+${line && line.open_questions ? `<div class="sub">Open: ${e(line.open_questions)}</div>` : ""}
+<h2>Verdicts, last three months</h2>${subjects.length ? `<table><tr><th>What</th>${periods.map((p) => `<th>${label(p)}</th>`).join("")}</tr>${subjects.map((s) => `<tr><td>${e(s.name)}</td>${periods.map((p) => `<td>${cell(s.key, p)}</td>`).join("")}</tr>`).join("")}</table>` : "<div>No approved verdicts yet.</div>"}
+${now.length ? `<h2>What we're doing now (${label(latest)})</h2><table>${now.map((r) => `<tr><td>${e(r.subject_name || r.subject_key)}</td><td>${e(r.action || "")}<div class="sub">Recheck ${e(r.recheck_date)}</div></td></tr>`).join("")}</table>` : ""}
+<h2>Warning signs</h2>${ws.length ? `<ul>${ws.map((w) => `<li class="${ws.length >= 2 ? "alert" : ""}">${e(WARNING_SIGNS[w.sign] || w.sign)} &middot; ${e(w.noted_on)}${w.note ? " &middot; " + e(w.note) : ""}</li>`).join("")}</ul>` : "<div>None open.</div>"}
+${(calls.results || []).length ? `<div class="alert">Open: ${e(calls.results[0].name)}, due ${e(calls.results[0].due_date)}</div>` : ""}
+<h2>Open moves</h2><div class="sub">Not stored in the Tracker yet. Read the client's _activity.md for moves waiting on the client, each with its owner and chase date.</div>
+<h2>Ask again (step 1 questions)</h2><ol><li>How many jobs a week keeps you busy, and how many more could you take?</li><li>What is a typical job worth?</li><li>Out of ten people who call, how many become jobs?</li></ol>
+<h2>To leave the call with</h2><ol><li>A yes, no or change on the success line.</li><li>Agreement on what we keep, change and stop.</li><li>The next move, if the core holds (step 5).</li></ol>
+<p class="sub"><a href="#" onclick="window.print();return false">Print</a></p></body></html>`;
+  return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+}
+__name(handleVerdictPrep, "handleVerdictPrep");
 async function handleVerdictBoard(request, env) {
   const url = new URL(request.url);
   const period = url.searchParams.get("period") || new Date().toISOString().slice(0, 7);
@@ -7279,7 +7324,7 @@ async function handleVerdictState(request, env) {
   if (!cid) return json({ error: "client required" }, 400);
   const [line, prior] = await Promise.all([
     env.DB.prepare("SELECT * FROM client_success_line WHERE client_id = ? AND status = 'approved' ORDER BY id DESC LIMIT 1").bind(cid).first(),
-    env.DB.prepare("SELECT period, subject_key, verdict, metrics, status FROM client_verdicts WHERE client_id = ? AND status = 'approved' ORDER BY period DESC LIMIT 60").bind(cid).all()
+    env.DB.prepare("SELECT period, subject_type, subject_key, subject_name, verdict, reason, metrics, status FROM client_verdicts WHERE client_id = ? AND status = 'approved' ORDER BY period DESC LIMIT 60").bind(cid).all()
   ]);
   return json({ line: line || null, prior: prior.results || [] });
 }

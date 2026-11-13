@@ -174,6 +174,7 @@ var ROUTES = [
   { method: "POST", re: /^\/api\/internal\/verdicts\/propose$/, handler: handleVerdictPropose, public: true },
   { method: "GET", re: /^\/api\/internal\/verdicts\/state$/, handler: handleVerdictState, public: true },
   { method: "POST", re: /^\/api\/warning-signs$/, handler: handleWarningCreate },
+  { method: "GET", re: /^\/api\/scorecard$/, handler: handleScorecard },
   { method: "GET", re: /^\/api\/verdicts\/prep\/([^/]+)$/, handler: (r, e, m) => handleVerdictPrep(r, e, decodeURIComponent(m[1])) },
   { method: "POST", re: /^\/api\/warning-signs\/([0-9]+)\/resolve$/, handler: (r, e, m) => handleWarningResolve(r, e, m[1]) }
 ];
@@ -6197,7 +6198,7 @@ function renderVerdicts(){
   if(!wrap)return;
   var d=vdData||{};var s=d.summary||{};
   var h='<div class="vd-head"><div class="section-title" style="margin:0">Verdicts</div>';
-  h+='<div class="vd-month"><button class="vd-btn" data-action="vd-month" data-val="-1">&#8592;</button><span>'+esc(vdMonthName(vdPeriod))+'</span><button class="vd-btn" data-action="vd-month" data-val="1">&#8594;</button></div></div>';
+  h+='<div class="vd-month"><button class="vd-btn" data-action="vd-month" data-val="-1">&#8592;</button><span>'+esc(vdMonthName(vdPeriod))+'</span><button class="vd-btn" data-action="vd-month" data-val="1">&#8594;</button><a class="vd-btn" href="/api/scorecard" target="_blank" rel="noopener">Scorecard</a></div></div>';
   h+='<div class="vd-sub">Step 4 of the Client Success Process. The monthly report proposes one verdict per campaign and service; you approve. Approving as Robbie.</div>';
   h+='<div class="vd-sum">';
   h+='<div class="vd-stat"><b>'+(s.clients||0)+'</b>clients on the Routine</div>';
@@ -7157,6 +7158,85 @@ async function handleWarningResolve(request, env, id) {
   return json({ ok: true });
 }
 __name(handleWarningResolve, "handleWarningResolve");
+// Scorecard (build 6): one page across every Routine client. Every figure is one the
+// monthly report pulled and Robbie approved; each row names the account, the window
+// and the date the report ran. Nothing is computed here beyond counts.
+async function handleScorecard(request, env) {
+  const e = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const [clients, lines, verdicts, ids] = await Promise.all([
+    env.DB.prepare("SELECT id, name FROM sprint_clients WHERE archived = 0 AND stage = 'routine' ORDER BY name").all(),
+    env.DB.prepare("SELECT client_id, scope, unit, per, target_value, target_date, cpl_bar, approved_at FROM client_success_line WHERE status = 'approved'").all(),
+    env.DB.prepare("SELECT client_id, period, subject_type, subject_key, verdict, metrics, provenance, window_start, window_end, created_at FROM client_verdicts WHERE status = 'approved' ORDER BY period").all(),
+    env.DB.prepare("SELECT client_id, gads_cid FROM client_platform_ids").all()
+  ]);
+  const cs = clients.results || [];
+  const lineBy = {}; for (const l of lines.results || []) lineBy[l.client_id] = l;
+  const cidBy = {}; for (const r of ids.results || []) cidBy[r.client_id] = r.gads_cid;
+  const vBy = {}; for (const v of verdicts.results || []) (vBy[v.client_id] = vBy[v.client_id] || []).push(v);
+  const svcBy = await activeServicesFor(env, cs.map((c) => c.id));
+  const month = new Date().toISOString().slice(0, 7);
+  const split = { keep: 0, fix: 0, swerve: 0, kill: 0, too_early: 0, fix_tracking: 0 };
+  const status = { on_track: 0, behind: 0, reached: 0, not_set: 0 };
+  let cycled = 0, beats = 0, withCpl = 0;
+  const rows = cs.map((c) => {
+    const vs = vBy[c.id] || [];
+    const periods = [...new Set(vs.map((v) => v.period))];
+    const complete = periods.filter((p) => verdictCoverage(vs.filter((v) => v.period === p).map((v) => ({ subject_key: v.subject_key, status: "approved" })), svcBy[c.id] || []).complete);
+    if (complete.length) cycled++;
+    for (const v of vs) if (v.period === month && split[v.verdict] != null) split[v.verdict]++;
+    const lineRows = vs.filter((v) => v.subject_type === "line");
+    const lastLine = lineRows[lineRows.length - 1];
+    const line = lineBy[c.id];
+    if (line && lastLine && status[lastLine.verdict] != null) status[lastLine.verdict]++;
+    let cpl = null;
+    for (let i = lineRows.length - 1; i >= 0 && !cpl; i--) {
+      try { const m = JSON.parse(lineRows[i].metrics || "{}"); if (m.cpl && m.cpl.actual) cpl = { ...m.cpl, row: lineRows[i] }; } catch { }
+    }
+    if (cpl && cpl.benchmark) { withCpl++; if (cpl.actual <= cpl.benchmark) beats++; }
+    let prov = {}; try { prov = JSON.parse((cpl && cpl.row.provenance) || "{}") || {}; } catch { }
+    return { c, line, lastLine, complete, cpl, acct: prov.gads_customer_id || cidBy[c.id] || null, monthRows: vs.filter((v) => v.period === month) };
+  });
+  const goal = (l) => l ? `${l.target_value} ${e(l.unit)} a ${e(l.per)}${l.scope && l.scope !== "account" ? " from " + e(String(l.scope).replace(/\s*,\s*/, " in ")) : ""} by ${e(l.target_date)}` : "";
+  const label = { on_track: "On track", behind: "Behind", reached: "Reached", not_set: "Not yet called" };
+  const money = (v) => v == null ? "" : "$" + Number(v).toFixed(2);
+  const mix = (rs) => { const n = {}; for (const r of rs) if (r.subject_type !== "line") n[r.verdict] = (n[r.verdict] || 0) + 1; return Object.entries(n).map(([k, v]) => `${v} ${k.replace("_", " ")}`).join(", "); };
+  const withLine = rows.filter((r) => r.line).length;
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Client Success Scorecard</title><style>
+body{font-family:Arial,Helvetica,sans-serif;color:#1d1d1f;background:#f5f5f7;margin:0;padding:24px 16px;font-size:13px;line-height:1.45}
+.wrap{max-width:1100px;margin:0 auto}h1{font-size:22px;margin:0}.sub{color:#707070;font-size:12px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0}
+.tile{background:#fff;border:1px solid #d6d6d6;border-radius:8px;padding:12px}.tile b{display:block;font-size:24px}
+.tile span{font-size:11px;color:#707070;text-transform:uppercase;letter-spacing:.8px}
+h2{font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#707070;margin:22px 0 8px}
+.tbl{overflow-x:auto;background:#fff;border:1px solid #d6d6d6;border-radius:8px}
+table{border-collapse:collapse;width:100%;min-width:760px}td,th{border-bottom:1px solid #e8e8ed;padding:8px 10px;text-align:left;vertical-align:top}
+th{font-size:11px;color:#707070;font-weight:600;background:#fafafa}.muted{color:#777779}.alert{color:#b64400;font-weight:700}
+.note{font-size:12px;color:#707070;margin-top:14px;max-width:820px}</style></head><body><div class="wrap">
+<h1>Client Success Scorecard</h1><div class="sub">Internal &middot; ${new Date().toISOString().slice(0, 10)} &middot; ${cs.length} clients on the Routine</div>
+<div class="tiles">
+<div class="tile"><b>${withLine}</b><span>with a success line</span></div>
+<div class="tile"><b>${status.on_track + status.reached}</b><span>on track or reached</span></div>
+<div class="tile"><b>${status.behind}</b><span>behind</span></div>
+<div class="tile"><b>${cycled}</b><span>through a full monthly cycle</span></div>
+<div class="tile"><b>${withCpl ? beats + " of " + withCpl : "0"}</b><span>beat their cost-per-lead benchmark</span></div>
+</div>
+<h2>This month's approved verdicts (${month})</h2>
+<div>${Object.entries(split).map(([k, v]) => `${v} ${k.replace("_", " ")}`).join(" &middot; ")}</div>
+<h2>Every client</h2><div class="tbl"><table><tr><th>Client</th><th>Goal</th><th>Status</th><th>Months complete</th><th>This month</th><th>Cost per call or form vs benchmark</th><th>Source</th></tr>
+${rows.map((r) => `<tr><td>${e(r.c.name)}</td>
+<td>${r.line ? goal(r.line) : '<span class="muted">No success line</span>'}</td>
+<td>${r.line ? (r.lastLine ? (r.lastLine.verdict === "behind" ? `<span class="alert">${label.behind}</span>` : label[r.lastLine.verdict] || e(r.lastLine.verdict)) : '<span class="muted">No verdict yet</span>') : ""}</td>
+<td>${r.complete.length || '<span class="muted">0</span>'}</td>
+<td>${mix(r.monthRows) || '<span class="muted">none approved</span>'}</td>
+<td>${r.cpl ? `${money(r.cpl.actual)} vs ${money(r.cpl.benchmark)}${r.cpl.benchmark ? (r.cpl.actual <= r.cpl.benchmark ? " &middot; beats it" : ' &middot; <span class="alert">above it</span>') : ""}` : '<span class="muted">not measured</span>'}</td>
+<td class="muted">${r.cpl ? `Google Ads ${e(r.acct || "account not pinned")}, ${e(r.cpl.row.window_start || "")} to ${e(r.cpl.row.window_end || "")}, report run ${e(String(r.cpl.row.created_at || "").slice(0, 10))}` : ""}</td></tr>`).join("")}
+</table></div>
+<div class="note">How this is counted. Every figure comes from a monthly report run and a verdict Robbie approved; nothing on this page is pulled or computed separately. Status is the latest approved success-line verdict. A month counts as complete when the success line and every active Google Ads, Business Profile and SEO service have an approved verdict (services as they stand today). Cost per call or form counts calls and forms on all conversions, against the sourced benchmark the report used. Internal only: the client-facing version is built from this page and carries no dollar figures except a cost per lead beside a benchmark the client beats.</div>
+</div></body></html>`;
+  return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+}
+__name(handleScorecard, "handleScorecard");
 // Quarterly conversation prep sheet (build 5): one printable page per client for
 // Robbie's 20-minute call with the person who signs and pays.
 async function handleVerdictPrep(request, env, clientId) {

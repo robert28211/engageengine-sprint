@@ -2257,11 +2257,11 @@ function getHTML(authed) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>EngageEngine Sprint Tracker</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Saira:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#F5F3EE;--surface:#FFFFFF;--surface2:#EDEAE3;--border:#E2DED5;--text:#1C1917;--text-dim:#78716C;--text-muted:#A8A29E;--accent:#CF6344;--accent-glow:rgba(207,99,68,0.08);--green:#16A34A;--green-bg:rgba(22,163,74,0.08);--amber:#D97706;--amber-bg:rgba(217,119,6,0.08);--red:#DC2626;--red-bg:rgba(220,38,38,0.08);--snackbar-bg:#292524}
+:root{--bg:#05090d;--surface:#0a141b;--surface2:#0e1c25;--border:rgba(77,216,255,.30);--text:#d9e8f0;--text-dim:#8aa2b0;--text-muted:#8aa2b0;--accent:#4dd8ff;--accent-glow:rgba(77,216,255,.09);--green:#58e0a0;--green-bg:rgba(88,224,160,.10);--amber:#ffb020;--amber-bg:rgba(255,176,32,.10);--red:#ff6b5e;--red-bg:rgba(255,107,94,.10);--snackbar-bg:#0a141b}
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:"DM Sans",sans-serif;background:var(--bg);color:var(--text);min-height:100vh;-webkit-font-smoothing:antialiased}
+body{font-family:"Saira",sans-serif;background:var(--bg);color:var(--text);min-height:100vh;-webkit-font-smoothing:antialiased}
 /* \u2500\u2500 Login \u2500\u2500 */
 .login-bg{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg)}
 .login-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:40px 36px;width:360px;max-width:90vw;box-shadow:0 4px 24px rgba(28,25,23,0.10)}
@@ -2829,6 +2829,108 @@ body{padding-bottom:80px}
 .vd-log{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)}
 .vd-log select,.vd-log input{font:inherit;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text)}
 .vd-log input{flex:1;min-width:160px}
+</style>
+<style>
+/* HUD skin overrides */
+:root{color-scheme:dark;--panel:rgba(10,20,27,.88);--line:rgba(77,216,255,.30);--line-faint:rgba(77,216,255,.14);--on-accent:#04121a;--mono:"JetBrains Mono",monospace;--clip:polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,0 100%)}
+body{background:linear-gradient(rgba(77,216,255,.07) 1px,transparent 1px) 0 0/100% 48px,linear-gradient(90deg,rgba(77,216,255,.07) 1px,transparent 1px) 0 0/48px 100%,radial-gradient(ellipse at 50% 30%,#0b2230 0,#05090d 62%);background-color:#05090d;background-attachment:fixed;color:var(--text)}
+*{border-radius:0!important;box-shadow:none!important;scrollbar-color:rgba(77,216,255,.30) transparent}
+.team-avatar,.task-check,.checklist-circle,.gmail-dot,.rt-dot,.svc-badge{border-radius:50%!important}
+:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+::selection{background:rgba(77,216,255,.30);color:#fff}
+input::placeholder,textarea::placeholder,.assistant-input::placeholder{color:#8aa2b0;opacity:1}
+select option{background:#0a141b;color:#d9e8f0}
+input[type=checkbox],input[type=radio]{accent-color:var(--accent)}
+:where(button){background:transparent;border:1px solid var(--border);color:var(--text);cursor:pointer}
+/* fonts */
+input,select,textarea,.client-notes{font-family:"Saira",sans-serif!important}
+button,.vd-btn,.mode-tab{font-family:var(--mono)!important;text-transform:uppercase;letter-spacing:.12em}
+button.phase-btn{font-family:"Saira",sans-serif!important;text-transform:none;letter-spacing:0}
+select.job-assign-select{font-family:var(--mono)!important}
+.phase-name{font-family:var(--mono);text-transform:uppercase;letter-spacing:.12em;font-size:12px}
+.add-client-btn,.edit-btn,.archive-btn,.job-complete-btn,.job-notes-btn,.job-notes-save,.job-notes-cancel,.remove-btn,.add-btn,.intake-confirm-btn,.intake-review-btn,.intake-dismiss-btn,.intake-note-btn,.intake-upload-btn,.intake-bulk-delete-btn,.decide-btn,.sprint-activate-btn,.sprint-graduate-btn,.rt-gen-all,.gmail-connect-btn,.gmail-checknow-btn,.maint-date-btn,.seo-check-btn,.vd-btn,.login-btn,.save-btn,.cancel-btn,.cancel-edit-btn,.confirm-btn,.inline-form button,.gear-add-form button,.add-client-form button,.snackbar-undo,.add-to-client-btn{font-size:12px;line-height:1.5;font-weight:600}
+.stat-card .label,.section-title,.login-field label,.gear-panel-title,.activate-modal label,.note-modal label,.gmail-settings-title,.allwork-table th,.services-table th,.maint-table th,.rt-board thead th,.rt-pulse-label,.rt-colcad,.allwork-count-label,.rt-firm-tag,.vd-done{font-family:var(--mono);text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:500;color:var(--text-dim)}
+.job-badge,.checklist-badge,.intake-badge,.allwork-stale,.allwork-badge,.acc-ready,.task-assignee,.task-tool,.rt-task-who,.vd-badge,.rt-pill,.rt-pulse-ok,.rt-pulse-behind,.template-pill,.sprint-client-btn{font-family:var(--mono);text-transform:uppercase;letter-spacing:.12em;font-size:11px}
+.task-blocked,.header-stats,.nav-back{font-family:var(--mono)}
+.nav-back{text-transform:uppercase;letter-spacing:.12em;font-size:12px}
+.stat-card .value,.allwork-count,.sprint-progress-header .pct,.rt-pulse-count{font-family:var(--mono);font-weight:600}
+.stat-card .value,.rt-pulse-count{color:#fff}
+/* header + tabs */
+.header{background:rgba(5,9,13,.82);border-bottom:1px solid var(--line);flex-wrap:wrap;gap:10px}
+.header-left{flex-wrap:wrap}
+.header h1,.login-card h1{font-family:var(--mono);font-weight:700;letter-spacing:.3em;text-transform:uppercase;color:#fff;font-size:15px}
+.login-card h1{font-size:17px}
+.header h1 span,.login-card h1 span{color:inherit}
+.header-stats .sv{color:#fff}
+.mode-tabs,.allwork-subtabs{background:transparent;border:none;border-bottom:1px solid var(--line-faint);padding:0;gap:2px;flex-wrap:wrap}
+.mode-tab,.allwork-subtab{padding:8px 12px;font-size:11px;line-height:1.5;font-weight:500;letter-spacing:.14em;color:var(--text-dim);background:transparent;border:none;border-bottom:2px solid transparent}
+.mode-tab:hover,.mode-link:hover,.allwork-subtab:hover{color:var(--text);background:rgba(77,216,255,.05)}
+.mode-tab.active,.allwork-subtab.active{background:var(--accent-glow);color:var(--accent);border:none;border-bottom:2px solid var(--accent)}
+/* panels */
+.login-bg{background:transparent}
+.login-card,.stat-card,.team-card,.gear-panel,.add-client-form,.client-card,.job-header,.job-notes-panel,.sprint-progress-wrap,.sprint-section,.intake-item,.gmail-settings,.intake-job-card,.rt-pulse-card,.rt-board-wrap,.vd-stat,.vd-card,.vd-overdue,.vd-signs,.phase-btn,.sprint-client-btn,.task-list{background:var(--panel)}
+.login-card,.stat-card,.team-card,.gear-panel,.client-card,.job-header,.sprint-progress-wrap,.sprint-section,.activate-modal,.intake-item,.note-modal,.intake-modal,.intake-job-card,.rt-pulse-card,.rt-board-wrap,.services-table-wrap,.maint-table-wrap,.vd-card,.activity-item{clip-path:var(--clip)}
+.activate-modal,.note-modal,.intake-modal,.rt-drawer,.aw-bulk-bar{background:#0a141b;border-color:var(--line)}
+.team-card:hover,.client-card:hover,.phase-btn.active,.phase-btn:hover{background:var(--accent-glow)}
+.note-modal-overlay{background:rgba(0,0,0,.65)}
+/* row separators, tables */
+.task-item,.checklist-item,.gear-member-row,.allwork-table td,.services-table td,.maint-table td,.intake-job-card .itask-sm{border-bottom-color:var(--line-faint)}
+.rt-cell,.vd-row{border-top-color:var(--line-faint)}
+.allwork-table th,.services-table th,.maint-table th,.rt-board thead th{border-bottom:1px solid var(--line)}
+.task-item:hover,.checklist-item:hover,.sprint-section-header:hover,.rt-task:hover{background:rgba(77,216,255,.06)}
+.allwork-table tr:hover td{background:rgba(77,216,255,.06)}
+.services-table tbody tr:hover td,.maint-table tbody tr:hover td{background-color:rgba(77,216,255,.05)}
+.services-table tbody tr:nth-child(even) .svc-client-name{background:#0b161e}
+.services-table tbody tr:hover .svc-client-name,.maint-table tbody tr:hover .maint-client,.rt-board tbody tr:hover .rt-csticky{background:#0d1e27}
+/* progress tracks */
+.sprint-progress-bar,.allwork-bar,.rt-pulse-bar{background:rgba(77,216,255,.14)}
+/* checks */
+.task-check,.checklist-circle{border-color:rgba(77,216,255,.45)}
+.task-check:hover{border-color:var(--accent);background:var(--accent-glow)}
+.task-check.done,.checklist-circle.done{border-color:var(--accent);background:var(--accent)}
+/* solid cyan buttons take dark text */
+.login-btn,.gear-add-form button,.add-client-form button:not(.cancel-btn),.job-notes-save,.task-edit-row .save-btn,.block-edit-row .save-btn,.inline-form button,.assistant-send,.sprint-client-btn.active,.activate-modal-actions .confirm-btn,.note-modal-actions .save-btn,.intake-modal-actions .confirm-btn,.intake-chat-send,.rt-gen-all,.chat-msg.user,.gmail-connect-btn:hover,.intake-review-btn:hover,.rt-gap-item:hover,.rt-missed{color:var(--on-accent)}
+.login-btn,.job-notes-save,.rt-gen-all,.activate-modal-actions .confirm-btn,.note-modal-actions .save-btn,.intake-modal-actions .confirm-btn{font-weight:700}
+[style*="background:var(--accent);color:#fff"]{color:#04121a!important}
+.vd-btn.vd-primary{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+/* status chips: tint + colored hairline */
+.job-badge.active,.allwork-badge.active,.rt-pill.done,.rt-pulse-ok,.acc-ok,.acc-ready.yes,.svc-active{border:1px solid rgba(88,224,160,.45)}
+.intake-badge,.allwork-stale,.rt-pill.partial,.svc-paused{border:1px solid rgba(255,176,32,.45)}
+.checklist-badge.critical,.task-blocked,.rt-pill.overdue,.rt-pulse-behind,.acc-ready.no,.svc-cancelled{border:1px solid rgba(255,107,94,.45)}
+.job-badge.complete,.rt-pill.pending,.acc-ready.na,.task-assignee{border:1px solid var(--line-faint)}
+.vd-badge.vd-v-keep,.vd-badge.vd-v-on_track,.vd-badge.vd-v-reached{background:var(--green-bg);color:var(--green);border:1px solid rgba(88,224,160,.45)}
+.vd-badge.vd-v-kill,.vd-badge.vd-v-behind{background:var(--red-bg);color:var(--red);border:1px solid rgba(255,107,94,.45)}
+.vd-overdue{border-color:rgba(255,107,94,.55)}
+.vd-warn{border-left-color:var(--red)}
+.vd-missing{color:var(--red)}
+.vd-signs{border-color:var(--line)}
+.intake-bulk-delete-btn{background:transparent;color:var(--red);border:1px solid var(--red)}
+.intake-bulk-delete-btn:hover{background:var(--red);color:var(--on-accent);opacity:1}
+/* fixed bars */
+.assistant-bar{background:rgba(5,9,13,.9);border-top:1px solid var(--line)}
+.assistant-input{background:rgba(10,20,27,.9)}
+.snackbar{border-color:var(--line);color:var(--text)}
+/* client health (CH_CSS, injected into #healthContent) */
+#healthContent .ch-stat,#healthContent .ch-row{background:var(--panel);clip-path:var(--clip)}
+#healthContent .ch-lbl{font-family:var(--mono);letter-spacing:.14em;font-size:11px;font-weight:500}
+#healthContent .ch-num{font-family:var(--mono);font-weight:600}
+#healthContent .ch-pill{font-family:var(--mono)}
+#healthContent .ch-s-red,#healthContent .ch-s-amber,#healthContent .ch-s-green{border:1px solid currentColor}
+#healthContent .ch-flag{border:1px solid rgba(255,107,94,.45);font-family:var(--mono);text-transform:uppercase;letter-spacing:.1em}
+#healthContent .ch-trend{color:var(--on-accent);font-family:var(--mono);letter-spacing:.14em}
+#healthContent .ch-t-flat{background:transparent;color:var(--text-dim);border:1px solid var(--line)}
+#healthContent .ch-t-critical{outline:1px solid var(--red);outline-offset:2px}
+#healthContent .ch-chip{font-family:var(--mono);font-size:11px}
+/* inline status colors from JS (agents feed, loop outcomes) */
+[style*="color:#b64400"],[style*="color:#DC2626"]{color:var(--red)!important}
+[style*="color:#D97706"],[style*="color:#ed6300"]{color:var(--amber)!important}
+[style*="color:#16A34A"]{color:var(--green)!important}
+[style*="color:#78716C"]{color:var(--text-dim)!important}
+[style*="color:#0071e3"]{color:var(--accent)!important}
+button[data-action="loop-outcome"]{background:transparent!important;border:1px solid var(--line)!important;color:var(--text-dim)!important}
+button[data-action="loop-outcome"][data-val="confirmed"]{color:var(--green)!important;border-color:var(--green)!important}
+button[data-action="loop-outcome"][data-val="partial"]{color:var(--amber)!important;border-color:var(--amber)!important}
+button[data-action="loop-outcome"][data-val="missed"]{color:var(--red)!important;border-color:var(--red)!important}
 </style>
 </head>
 <body>

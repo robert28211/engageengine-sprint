@@ -151,6 +151,10 @@ var ROUTES = [
   { method: "GET", re: /^\/api\/activity$/, handler: handleActivityFeed },
   // Cloud-agent status feed — reads agent_launches (shared command-center D1, written by engageengine-agents worker)
   { method: "GET", re: /^\/api\/agents$/, handler: handleAgentsFeed },
+  // Marketing Performance's own acquisition scoreboard (2026-11-24). GET also opens with
+  // x-read-key so Claude can read it; POST (manual weekly entry) is session gated.
+  { method: "GET", re: /^\/api\/mp-scoreboard$/, handler: handleMpScoreboard, readKey: true },
+  { method: "POST", re: /^\/api\/mp-scoreboard$/, handler: handleMpScoreboardSave },
   // Outcome loop — activities due for review + record what actually happened (session gated)
   { method: "GET", re: /^\/api\/activity\/due$/, handler: handleActivityDue },
   { method: "POST", re: /^\/api\/activity\/([0-9]+)\/outcome$/, handler: (r, e, m) => handleActivityOutcome(r, e, m[1]) },
@@ -2970,6 +2974,7 @@ button[data-action="loop-outcome"][data-val="missed"]{color:var(--red)!important
       <button class="mode-tab" id="modeActivityBtn" data-action="mode-activity">Activity</button>
       <button class="mode-tab" id="modeAgentsBtn" data-action="mode-agents">Agents</button>
       <button class="mode-tab" id="modeVerdictsBtn" data-action="mode-verdicts">Verdicts</button>
+      <button class="mode-tab" id="modeScoreboardBtn" data-action="mode-scoreboard" title="Marketing Performance's own pipeline, read every Monday">Scoreboard</button>
       <a class="mode-tab mode-link" href="https://command-center.robertlbutt.workers.dev/attention" target="_blank" rel="noopener" title="Who is owed a reply / no personal touch — Operations Hub">Attention ↗</a>
     </div>
   </div>
@@ -3066,6 +3071,11 @@ button[data-action="loop-outcome"][data-val="missed"]{color:var(--red)!important
 <!-- Verdicts mode (Client Success Process, step 4) -->
 <div id="verdictsMode" class="hidden">
   <div id="verdictsContent"><div class="loading">Loading...</div></div>
+</div>
+
+<!-- Scoreboard mode (Marketing Performance's own acquisition, 2026-11-24) -->
+<div id="scoreboardMode" class="hidden">
+  <div id="scoreboardContent"><div class="loading">Loading...</div></div>
 </div>
 
 </div><!-- /container -->
@@ -3166,6 +3176,9 @@ document.addEventListener('click', function(e) {
   else if (act === 'mode-activity') { switchMode('activity'); }
   else if (act === 'mode-agents') { switchMode('agents'); }
   else if (act === 'mode-verdicts') { switchMode('verdicts'); }
+  else if (act === 'mode-scoreboard') { switchMode('scoreboard'); }
+  else if (act === 'sb-save') { el.disabled = true; sbSave(el); }
+  else if (act === 'sb-pick') { sbPick(id, val); }
   else if (act === 'vd-month') { vdShift(parseInt(val, 10) || 0); }
   else if (act === 'vd-approve') { el.disabled = true; vdApprove(id); }
   else if (act === 'vd-approve-client') { el.disabled = true; vdApproveClient(id); }
@@ -3252,6 +3265,7 @@ document.addEventListener('change', function(e) {
   var act = el.getAttribute('data-action');
   if (act === 'note-client-change') { loadNoteJobSelect(el.value); }
   else if (act === 'activity-filter-tool') { activityToolFilter = el.value; loadActivityFeed(); }
+  else if (act === 'sb-form-change') { sbFillForm(); }
 });
 
 // \u2500\u2500 Mode switching \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -3269,6 +3283,7 @@ function switchMode(mode) {
   document.getElementById('modeActivityBtn').classList.toggle('active', mode === 'activity');
   document.getElementById('modeAgentsBtn').classList.toggle('active', mode === 'agents');
   document.getElementById('modeVerdictsBtn').classList.toggle('active', mode === 'verdicts');
+  document.getElementById('modeScoreboardBtn').classList.toggle('active', mode === 'scoreboard');
   document.getElementById('jobsMode').classList.toggle('hidden', mode !== 'jobs');
   document.getElementById('sprintMode').classList.toggle('hidden', mode !== 'sprint');
   document.getElementById('routineMode').classList.toggle('hidden', mode !== 'routine');
@@ -3280,6 +3295,7 @@ function switchMode(mode) {
   document.getElementById('activityMode').classList.toggle('hidden', mode !== 'activity');
   document.getElementById('agentsMode').classList.toggle('hidden', mode !== 'agents');
   document.getElementById('verdictsMode').classList.toggle('hidden', mode !== 'verdicts');
+  document.getElementById('scoreboardMode').classList.toggle('hidden', mode !== 'scoreboard');
   document.getElementById('navBack').style.display = 'none';
   if (mode === 'jobs') {
     document.getElementById('headerStats').style.display = '';
@@ -3314,6 +3330,9 @@ function switchMode(mode) {
   } else if (mode === 'verdicts') {
     document.getElementById('headerStats').style.display = 'none';
     loadVerdicts();
+  } else if (mode === 'scoreboard') {
+    document.getElementById('headerStats').style.display = 'none';
+    loadScoreboard();
   }
 }
 
@@ -6383,6 +6402,106 @@ async function vdApproveChanged(id){
   if(await vdPost('/api/verdicts/'+id+'/approve',body))loadVerdicts();
 }
 
+// ── MP Scoreboard (Marketing Performance's own acquisition) ─────────────────
+// Served inside a template literal: no regex literals, no backslash escapes, no dollar-brace.
+var sbData=null;
+var SB_METRICS=[['booked','Booked'],['held','Held'],['proposal_sent','Proposal sent'],['signed','Signed']];
+async function loadScoreboard(){
+  var wrap=document.getElementById('scoreboardContent');
+  if(!wrap)return;
+  wrap.innerHTML='<div class="loading">Loading...</div>';
+  try{
+    var res=await fetch(API+'/api/mp-scoreboard');
+    if(res.status===401){showLoginScreen();return;}
+    if(!res.ok){wrap.innerHTML='<div class="loading">Failed to load the scoreboard.</div>';return;}
+    sbData=await res.json();
+    renderScoreboard();
+  }catch(e){wrap.innerHTML='<div class="loading">Failed to load the scoreboard.</div>';}
+}
+function sbDays(n){if(n>0)return n+' days to go';if(n===0)return'today';return Math.abs(n)+' days ago';}
+function sbFmtDay(d){var t=new Date(d+'T00:00:00Z');var w=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][t.getUTCDay()];return w+' '+d;}
+function renderScoreboard(){
+  var wrap=document.getElementById('scoreboardContent');
+  if(!wrap||!sbData)return;
+  var d=sbData,p=d.progress,ch=d.channels;
+  var h='<div class="section-title">MP Scoreboard &middot; our own pipeline</div>';
+  h+='<div class="vd-sub">Read every Monday. Each number counts what happened in that week (Mon to Sun). Booked means a call on the calendar; a form submission alone is not a booking. As of '+esc(d.as_of)+'.</div>';
+  h+='<div class="vd-sum">';
+  h+='<div class="vd-stat">Target &middot; signed by '+esc(p.target.by)+'<b>'+p.target.actual+' / '+p.target.target+'</b>'+sbDays(p.target.days_left)+'</div>';
+  h+='<div class="vd-stat">Milestone &middot; held calls by '+esc(p.milestone.by)+'<b>'+p.milestone.actual+' / '+p.milestone.target+'</b>'+sbDays(p.milestone.days_left)+'</div>';
+  var td=p.checkpoint.to_date;
+  h+='<div class="vd-stat">'+esc(p.checkpoint.label)+' &middot; '+esc(p.checkpoint.date)+'<b>'+td.booked+' booked &middot; '+td.held+' held &middot; '+td.proposal_sent+' sent &middot; '+td.signed+' signed</b>'+sbDays(p.checkpoint.days_left)+' (plan to date)</div>';
+  h+='</div>';
+  // Entry form
+  var wkOpts='';
+  for(var i=0;i<d.weeks.length;i++){var w=d.weeks[i].week_start;wkOpts+='<option value="'+esc(w)+'">Week of '+esc(sbFmtDay(w))+(w===d.this_week?' (this week)':'')+'</option>';}
+  var chOpts='';
+  for(var c=0;c<ch.length;c++)chOpts+='<option value="'+esc(ch[c])+'">'+esc(ch[c])+'</option>';
+  h+='<div class="vd-card"><div class="vd-card-head"><div class="vd-name">Enter or edit a week</div></div>';
+  h+='<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:10px">';
+  h+='<label style="font-size:11px;color:var(--text-dim)">Week<br><select id="sbWeek" data-action="sb-form-change">'+wkOpts+'</select></label>';
+  h+='<label style="font-size:11px;color:var(--text-dim)">Channel<br><select id="sbChannel" data-action="sb-form-change">'+chOpts+'</select></label>';
+  for(var m=0;m<SB_METRICS.length;m++)h+='<label style="font-size:11px;color:var(--text-dim)">'+SB_METRICS[m][1]+'<br><input type="number" min="0" max="999" step="1" id="sbIn_'+SB_METRICS[m][0]+'" style="width:70px"></label>';
+  h+='<button class="vd-btn" data-action="sb-save">Save</button><span id="sbMsg" style="font-size:12px;color:var(--text-dim)"></span></div></div>';
+  // Plan to date by channel
+  h+='<div class="section-title" style="margin-top:18px">Plan to date by channel (since '+esc(d.plan.start_week)+')</div>';
+  h+='<div class="services-table-wrap" style="max-height:none;margin-bottom:18px"><table class="services-table"><thead><tr><th class="svc-client-col">Channel</th>';
+  for(var m2=0;m2<SB_METRICS.length;m2++)h+='<th>'+SB_METRICS[m2][1]+'</th>';
+  h+='</tr></thead><tbody>';
+  for(var c2=0;c2<ch.length;c2++){var pc=d.plan_by_channel[ch[c2]];h+='<tr><td style="text-align:left">'+esc(ch[c2])+'</td>';for(var m3=0;m3<SB_METRICS.length;m3++)h+='<td>'+pc[SB_METRICS[m3][0]]+'</td>';h+='</tr>';}
+  h+='<tr><td style="text-align:left;font-weight:700">Total</td>';for(var m4=0;m4<SB_METRICS.length;m4++)h+='<td style="font-weight:700">'+d.plan_totals[SB_METRICS[m4][0]]+'</td>';h+='</tr>';
+  h+='</tbody></table></div>';
+  // Weekly tables, newest first. Every week shows, zeros included.
+  h+='<div class="section-title">By week (newest first)</div>';
+  for(var k=0;k<d.weeks.length;k++){
+    var wk=d.weeks[k];
+    h+='<div class="vd-card"><div class="vd-card-head"><div class="vd-name">Week of '+esc(sbFmtDay(wk.week_start))+' to '+esc(sbFmtDay(wk.week_end))+(wk.week_start===d.this_week?' &middot; this week':'')+'</div>';
+    h+='<span style="font-size:12px;color:var(--text-dim)">'+(wk.entered?'updated '+esc(wk.updated_at)+' UTC':'nothing entered: all 0')+'</span></div>';
+    h+='<div class="services-table-wrap" style="max-height:none;margin-top:10px"><table class="services-table"><thead><tr><th class="svc-client-col"></th>';
+    for(var c3=0;c3<ch.length;c3++)h+='<th><span class="allwork-editable-cell" data-action="sb-pick" data-id="'+esc(wk.week_start)+'" data-val="'+esc(ch[c3])+'" title="Edit this week and channel">'+esc(ch[c3])+'</span></th>';
+    h+='<th>Total</th></tr></thead><tbody>';
+    for(var m5=0;m5<SB_METRICS.length;m5++){
+      var key=SB_METRICS[m5][0];
+      h+='<tr><td style="text-align:left">'+SB_METRICS[m5][1]+'</td>';
+      for(var c4=0;c4<ch.length;c4++)h+='<td>'+wk.channels[ch[c4]][key]+'</td>';
+      h+='<td style="font-weight:700">'+wk.totals[key]+'</td></tr>';
+    }
+    h+='</tbody></table></div></div>';
+  }
+  wrap.innerHTML=h;
+  sbFillForm();
+}
+function sbFillForm(){
+  if(!sbData)return;
+  var w=document.getElementById('sbWeek'),c=document.getElementById('sbChannel');
+  if(!w||!c)return;
+  var wk=null;
+  for(var i=0;i<sbData.weeks.length;i++)if(sbData.weeks[i].week_start===w.value)wk=sbData.weeks[i];
+  var cur=wk?wk.channels[c.value]:null;
+  for(var m=0;m<SB_METRICS.length;m++){var inp=document.getElementById('sbIn_'+SB_METRICS[m][0]);if(inp)inp.value=cur?cur[SB_METRICS[m][0]]:0;}
+}
+function sbPick(week,channel){
+  var w=document.getElementById('sbWeek'),c=document.getElementById('sbChannel');
+  if(!w||!c)return;
+  w.value=week;c.value=channel;sbFillForm();
+  w.scrollIntoView({behavior:'smooth',block:'center'});
+}
+async function sbSave(btn){
+  var msg=document.getElementById('sbMsg');
+  var body={week_start:document.getElementById('sbWeek').value,channel:document.getElementById('sbChannel').value};
+  for(var m=0;m<SB_METRICS.length;m++){var v=document.getElementById('sbIn_'+SB_METRICS[m][0]).value;body[SB_METRICS[m][0]]=v===''?0:Number(v);}
+  try{
+    var res=await fetch(API+'/api/mp-scoreboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(res.status===401){showLoginScreen();return;}
+    var j=await res.json().catch(function(){return {};});
+    if(!res.ok){if(msg)msg.textContent=j.error||'Save failed';if(btn)btn.disabled=false;return;}
+    await loadScoreboard();
+    var w=document.getElementById('sbWeek'),c=document.getElementById('sbChannel');
+    if(w&&c){w.value=body.week_start;c.value=body.channel;sbFillForm();}
+    var m2=document.getElementById('sbMsg');if(m2)m2.textContent='Saved '+body.channel+', week of '+body.week_start;
+  }catch(e){if(msg)msg.textContent='Save failed';if(btn)btn.disabled=false;}
+}
+
 // ── Cloud Agent Feed (engageengine-agents) ─────────────────
 var agentsFeedData=[];
 
@@ -7065,6 +7184,116 @@ async function handleAgentsFeed(request, env) {
   return json({ agents, now });
 }
 __name(handleAgentsFeed, "handleAgentsFeed");
+// ── MP Scoreboard: Marketing Performance's OWN client acquisition (2026-11-24) ──
+// Weekly counts per channel, entered by hand. Every number is events that happened in
+// that week (Mon-Sun). Booked = a call on the calendar, never a bare form submission.
+const MP_CHANNELS = ["Email", "LinkedIn", "Facebook/Instagram ad", "YouTube", "Google search", "Referral", "Other", "Unknown"];
+const MP_METRICS = ["booked", "held", "proposal_sent", "signed"];
+const MP_PLAN = {
+  start_week: "2026-11-23",
+  checkpoint: { date: "2026-12-24", label: "Day-30 checkpoint" },
+  milestone: { metric: "held", target: 6, by: "2027-01-25", label: "6 held calls" },
+  target: { metric: "signed", target: 3, by: "2027-02-22", label: "3 signed" }
+};
+function mpIsMonday(d) {
+  if (!isDay(d)) return false;
+  const t = new Date(d + "T00:00:00Z");
+  return !isNaN(t) && t.getUTCDay() === 1 && t.toISOString().slice(0, 10) === d;
+}
+function mpMondayOf(d) {
+  const t = new Date(d + "T00:00:00Z");
+  t.setUTCDate(t.getUTCDate() - ((t.getUTCDay() + 6) % 7));
+  return t.toISOString().slice(0, 10);
+}
+function mpAddDays(d, n) {
+  const t = new Date(d + "T00:00:00Z");
+  t.setUTCDate(t.getUTCDate() + n);
+  return t.toISOString().slice(0, 10);
+}
+async function handleMpScoreboard(request, env) {
+  const rows = (await env.DB.prepare(
+    "SELECT week_start, channel, booked, held, proposal_sent, signed, updated_at FROM mp_scoreboard ORDER BY week_start"
+  ).all()).results || [];
+  const today = new Date().toISOString().slice(0, 10);
+  const thisWeek = mpMondayOf(today);
+  let first = MP_PLAN.start_week;
+  if (rows.length && rows[0].week_start < first) first = rows[0].week_start;
+  let last = thisWeek;
+  if (rows.length && rows[rows.length - 1].week_start > last) last = rows[rows.length - 1].week_start;
+  const zero = () => ({ booked: 0, held: 0, proposal_sent: 0, signed: 0 });
+  const byWeek = {};
+  for (let w = first; w <= last; w = mpAddDays(w, 7)) {
+    const ch = {};
+    for (const c of MP_CHANNELS) ch[c] = zero();
+    byWeek[w] = { week_start: w, week_end: mpAddDays(w, 6), channels: ch, totals: zero(), entered: false, updated_at: null };
+  }
+  for (const r of rows) {
+    const wk = byWeek[r.week_start];
+    if (!wk || !wk.channels[r.channel]) continue;
+    for (const m of MP_METRICS) {
+      wk.channels[r.channel][m] = r[m] || 0;
+      wk.totals[m] += r[m] || 0;
+    }
+    wk.entered = true;
+    if (!wk.updated_at || r.updated_at > wk.updated_at) wk.updated_at = r.updated_at;
+  }
+  const weeks = Object.values(byWeek).sort((a, b) => (a.week_start < b.week_start ? 1 : -1));
+  // Plan-to-date: every week from the plan start onward (this week included).
+  const planTotals = zero();
+  const planByChannel = {};
+  for (const c of MP_CHANNELS) planByChannel[c] = zero();
+  const sumThrough = (metric, by) => weeks.filter((w) => w.week_start >= MP_PLAN.start_week && w.week_start <= by).reduce((s, w) => s + w.totals[metric], 0);
+  for (const w of weeks) {
+    if (w.week_start < MP_PLAN.start_week) continue;
+    for (const m of MP_METRICS) planTotals[m] += w.totals[m];
+    for (const c of MP_CHANNELS) for (const m of MP_METRICS) planByChannel[c][m] += w.channels[c][m];
+  }
+  const daysTo = (d) => Math.round((Date.parse(d + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) / 864e5);
+  const progress = {
+    target: { ...MP_PLAN.target, actual: sumThrough(MP_PLAN.target.metric, MP_PLAN.target.by), days_left: daysTo(MP_PLAN.target.by) },
+    milestone: { ...MP_PLAN.milestone, actual: sumThrough(MP_PLAN.milestone.metric, MP_PLAN.milestone.by), days_left: daysTo(MP_PLAN.milestone.by) },
+    checkpoint: { ...MP_PLAN.checkpoint, days_left: daysTo(MP_PLAN.checkpoint.date), to_date: { ...planTotals } }
+  };
+  return json({
+    as_of: today,
+    this_week: thisWeek,
+    definitions: {
+      week: "Monday to Sunday; week_start is the Monday",
+      booked: "a call scheduled on the calendar (a form submission alone is not a booking)",
+      held: "a scheduled call that actually happened",
+      proposal_sent: "a proposal sent to the prospect",
+      signed: "a signed agreement",
+      counting: "each number counts events that happened in that week; missing rows are 0"
+    },
+    plan: MP_PLAN,
+    channels: MP_CHANNELS,
+    progress,
+    plan_totals: planTotals,
+    plan_by_channel: planByChannel,
+    weeks
+  });
+}
+__name(handleMpScoreboard, "handleMpScoreboard");
+async function handleMpScoreboardSave(request, env) {
+  const b = await request.json().catch(() => ({}));
+  const week = String(b.week_start || "");
+  if (!mpIsMonday(week)) return json({ error: "week_start must be a Monday, YYYY-MM-DD" }, 400);
+  if (!MP_CHANNELS.includes(b.channel)) return json({ error: "unknown channel", channels: MP_CHANNELS }, 400);
+  const vals = [];
+  for (const m of MP_METRICS) {
+    const v = b[m] === "" || b[m] == null ? 0 : Number(b[m]);
+    if (!Number.isInteger(v) || v < 0 || v > 999) return json({ error: m + " must be a whole number 0-999" }, 400);
+    vals.push(v);
+  }
+  await env.DB.prepare(
+    `INSERT INTO mp_scoreboard (week_start, channel, booked, held, proposal_sent, signed, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(week_start, channel) DO UPDATE SET booked=excluded.booked, held=excluded.held,
+       proposal_sent=excluded.proposal_sent, signed=excluded.signed, updated_at=excluded.updated_at`
+  ).bind(week, b.channel, ...vals).run();
+  return json({ ok: true, week_start: week, channel: b.channel, booked: vals[0], held: vals[1], proposal_sent: vals[2], signed: vals[3] });
+}
+__name(handleMpScoreboardSave, "handleMpScoreboardSave");
 async function handleActivityDue(request, env) {
   // The review queue: activities whose review date has arrived and that have no recorded outcome yet.
   const rows = await env.DB.prepare(`
